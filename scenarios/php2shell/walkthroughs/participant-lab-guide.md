@@ -1,346 +1,1128 @@
-# PHP2Shell Participant Lab Guide
+# Scale Vulnerability Investigations with AI
 
-This is the canonical self-service journey for VulHarness Scenario 1. Run all commands from the repository root unless a step says otherwise. The guide grows progressively: the orchestration command provides one safe entry point for the implemented local and AWS paths, while the detailed sections retain the evidence and learning context. Agent-assisted work stays clearly marked as planned.
+*PHP2Shell — An AI Security Engineering Lab*
 
-The workshop journey is:
+This lab is for cybersecurity practitioners who want to use AI to investigate
+vulnerabilities, automate repeatable tasks, and scale their security workflows.
+Prior VulHarness or workshop experience is not required. This participant lab
+guide is the canonical self-service path for the PHP2Shell scenario.
 
-```text
-Authorize → Inspect → Compare → Automate → Remediate → Verify → Evaluate → Clean up
-```
+A new PHP security advisory has been published. Your security team needs to
+determine which applications may be affected, what PHP versions are actually
+running, whether remediation reached deployed environments, and how to repeat
+that investigation efficiently.
 
-## What is implemented
+The learning progression is:
 
-The local Lab A and Lab B journey is implemented and tested. It runs two independent PHP environments, inspects the PHP runtime actually serving HTTP requests, automates the version comparison, updates Lab B, and independently verifies the deployed result.
+~~~text
+Investigate → Automate → Verify
+~~~
 
-The AWS Lab C and Lab D journey includes live-validated infrastructure, three independent deployment methods, shared SSM-only Docker/Compose bootstrap, scoped EC2 discovery, Systems Manager runtime collection, and an independent cloud evaluator. The local dashboard is implemented; an AWS-hosted dashboard and agent-assisted investigation remain future work.
+You will investigate the problem manually, examine how coding-agent assistance
+can help turn a documented investigation into deterministic automation, run
+existing checks and evaluations, and use the implemented VulHarness command to
+coordinate the workflow. Future skills, agents, and integrations are discussed
+as design ideas; no autonomous vulnerability-investigation agent is required
+or implemented by this guide.
 
-## Part A — Understand the security problem
+## Contents
 
-PHP2Shell is the name used in this scenario for two upstream PHP vulnerabilities: CVE-2026-109618, remote code execution through out-of-memory corruption, and CVE-2026-109619, remote code execution through stale global state. Both have upstream PHP 8.4 fixes in PHP 8.4.27. Their technical conditions differ, so a version comparison is not proof that an application is exploitable or non-exploitable. See the [PHP2Shell reference register](../references.md) for authoritative advisories, affected branches, prerequisites, and limitations.
+- [1. Understand PHP2Shell](#1-understand-php2shell)
+- [What this lab contains](#what-this-lab-contains)
+- [Part A — Hard Mode: Manual Investigation](#part-a-hard-mode-manual-investigation)
+  - [2. Prerequisites and safety](#2-prerequisites-and-safety)
+  - [3. Manual local investigation — Labs A and B](#3-manual-local-investigation-labs-a-and-b)
+  - [4. Manual AWS investigation — Labs C and D](#4-manual-aws-investigation-labs-c-and-d)
+    - [4.1 Configure AWS identity and deployment method](#41-configure-aws-identity-and-deployment-method)
+    - [4.2 Deploy Labs C and D](#42-deploy-labs-c-and-d)
+    - [4.3 Confirm AWS deployment scope](#43-confirm-aws-deployment-scope)
+    - [4.4 Inspect and investigate PHP runtimes](#44-inspect-and-investigate-php-runtimes)
+    - [4.5 Remediate, verify, and reset Lab D](#45-remediate-verify-and-reset-lab-d)
+    - [4.6 AWS cleanup and absence verification](#46-aws-cleanup-and-absence-verification)
+- [Part B — Auto Mode: Deterministic Automation](#part-b-auto-mode-deterministic-automation)
+  - [5. From manual investigation to automated checks](#5-from-manual-investigation-to-automated-checks)
+  - [6. Independent evaluation](#6-independent-evaluation)
+  - [7. Automated AWS workflows](#7-automated-aws-workflows)
+- [Part C — Harness Mode: VulHarness](#part-c-harness-mode-vulharness)
+  - [8. Why introduce a harness?](#8-why-introduce-a-harness)
+  - [9. Run VulHarness](#9-run-vulharness)
+  - [10. Repository architecture and contributions](#10-repository-architecture-and-contributions)
+- [Part D — Beyond the Harness: Skills and Agents](#part-d-beyond-the-harness-skills-and-agents)
+  - [11. Reusable coding-agent skills](#11-reusable-coding-agent-skills)
+  - [12. Future agent orchestration](#12-future-agent-orchestration)
+  - [13. Future security integrations](#13-future-security-integrations)
+  - [14. Contribute the next scenario](#14-contribute-the-next-scenario)
+- [Appendix](#appendix)
+  - [Troubleshooting and recovery](#troubleshooting-and-recovery)
+  - [Technical references](#technical-references)
+  - [Reset and cleanup reference](#reset-and-cleanup-reference)
+- [What this lab establishes](#what-this-lab-establishes)
 
-This is a version-based investigation and remediation exercise. It does not execute exploits, prove exposure, or test remote code execution.
+## 1. Understand PHP2Shell
 
-The completed local path takes approximately 15–25 minutes after the required images are available. Independent participants may take longer, especially during the first image download.
+PHP is a server-side runtime commonly used to generate web responses. The
+runtime that actually serves a request may be behind Nginx, Apache, PHP-FPM,
+FrankenPHP, LSAPI, or another worker model. That is why a package version or a
+container declaration is not the same thing as evidence about the runtime
+serving an application.
 
-## 1. Prerequisites and safety
+In this scenario, PHP2Shell refers to two upstream PHP vulnerabilities:
 
-You need:
+- [CVE-2026-109618](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w),
+  remote code execution through out-of-memory corruption.
+- [CVE-2026-109619](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp),
+  remote code execution through stale global state.
 
+For PHP 8.4, the corresponding upstream fixed release in this exercise is
+8.4.27. See the [PHP2Shell reference register](../references.md) for the
+authoritative advisories, affected branches, prerequisites, and limitations.
+The [PHP Foundation security release](https://thephp.foundation/blog/2026/10/21/todays-php-security-release-and-how-were-strengthening-php-security/)
+and [OpenAI coordinated disclosure](https://openai.com/index/coordinated-disclosure-of-critical-vulnerabilities/)
+provide additional response context.
+
+During this lab, collect evidence for:
+
+- Authorization and investigation scope.
+- The runtime actually serving HTTP requests, including PHP version and SAPI.
+- Configuration intent versus deployed and observed runtime state.
+- Image, package, or build provenance where available.
+- Remediation and reset actions.
+- Evidence source, timestamp, freshness, and collection limitations.
+
+Version-based checks can classify an upstream-version state for this exercise.
+They cannot establish application exploitability, distribution backport status,
+all advisory applicability conditions, or non-exploitability.
+
+## What this lab contains
+
+| Lab | Environment | Initial PHP | Purpose |
+|---|---|---|---|
+| Lab A | Local Docker | 8.4.27 | Upstream fixed-version reference |
+| Lab B | Local Docker | 8.4.26 | Investigation and remediation target |
+| Lab C | AWS EC2 | 8.4.27 | Cloud fixed-version reference |
+| Lab D | AWS EC2 | 8.4.26 | Cloud investigation and remediation target |
+
+Labs A and B are independent local Docker Compose environments. Labs C and D
+demonstrate the same security investigation principles on two separate EC2
+instances using authenticated AWS Systems Manager access. The AWS examples are
+AWS-specific; Azure, GCP, other servers, and other endpoints are possible
+future adaptations, not implemented equivalents in this repository.
+
+Available today:
+
+- Manual local investigation and remediation with Labs A and B.
+- Deterministic local runtime checks and the Hello World 2.0 dashboard.
+- Independent local lifecycle evaluations.
+- AWS CLI, CloudFormation, and Terraform deployment methods, shared SSM
+  runtime collection, and scoped AWS evaluation for authorized participants.
+- The PHP2Shell-specific Python orchestration command.
+
+Future work:
+
+- Reusable coding-agent skills, a chief-of-staff agent, generalized
+  multi-scenario execution, automatic remediation, and external security
+  integrations are not implemented by this workshop.
+
+A version below an upstream fixed threshold does not automatically prove that
+an application is exploitable. This exercise does not execute exploits, prove
+external exposure, or test remote code execution.
+
+# Part A — Hard Mode: Manual Investigation
+
+## 2. Prerequisites and safety
+
+### Start from a fresh clone
+
+The primary examples use a macOS or Linux terminal and a Unix-style shell.
+Windows participants should use WSL2 integrated with Docker Desktop. Native
+Windows PowerShell and native Windows Docker workflows are not validated by
+this repository. In WSL2, use the Linux commands below after confirming that
+Docker Desktop integration is enabled.
+
+Clone the public repository and enter its root:
+
+~~~bash
+git clone https://github.com/The-AI-Security-Lab/vul-harness.git
+cd vul-harness
+~~~
+
+Verify the repository root:
+
+~~~bash
+pwd
+ls README.md scenarios/php2shell
+~~~
+
+Verify Git:
+
+~~~bash
+git --version
+~~~
+
+### Required for local labs
+
+- Git
 - Docker with Docker Compose v2
 - Python 3.9 or later
 - A terminal and web browser
-- A local copy of the VulHarness repository
-- Authorization to run local containers on the workstation
+- An authorized workstation on which you may run the local containers
 
-Open a terminal in the repository root. The following should list `README.md` and `scenarios`:
+Check the local tools:
 
-```sh
-pwd
-ls README.md scenarios
-```
-
-Confirm that Docker and Compose are available:
-
-```sh
+~~~bash
 docker info
 docker compose version
-```
+python3 --version
+~~~
 
-If `docker info` reports that it cannot connect to the daemon, start Docker Desktop, Colima, or your authorized Docker service before continuing.
+Some systems invoke Python as python rather than python3. If python3 does not
+exist, verify python --version and substitute python consistently in the
+commands below. If Docker cannot connect to its daemon, start Docker Desktop,
+Colima, or another Docker service that you are authorized to use.
 
-All commands below run from the **VulHarness repository root** unless explicitly stated otherwise.
+### Required only for AWS labs
 
-Use only these authorized local labs. Do not add credentials, personal data, production data, or unrelated Docker projects. The PHP inspection endpoints are training diagnostics and must remain on loopback. Do not use exploit probes or broad Docker cleanup commands.
+- An authorized AWS account and profile.
+- AWS CLI with permission to inspect and, when explicitly approved, create and
+  remove the deployment-owned EC2, VPC, IAM, and SSM resources.
+- A selected deployment method: AWS CLI, CloudFormation, or Terraform.
+- Terraform 1.17.1 with AWS provider 6.72.0 is the live-validated toolchain
+  documented for the Terraform path; the configuration retains its broader
+  compatibility constraints.
+- Awareness that t4g.small, EBS, public IPv4, and related AWS resources may
+  incur charges until scoped cleanup completes.
 
-Technical environment details are maintained separately in the [Lab A README](../labs/local/lab-a/README.md) and [Lab B README](../labs/local/lab-b/README.md).
+If the account contains a protected reference instance, set its account-specific
+ID only in the local environment as
+VULHARNESS_PROTECTED_INSTANCE_ID=your-protected-instance-id. Never commit that
+value. If it is unset, the evaluator reports the resource-independence check as
+SKIP with skip_classification=configuration_missing.
 
-## Part B — Manual local investigation with Labs A and B
+AWS is optional. Do not deploy live AWS resources for the core local workshop.
 
-### Start the labs
+### Optional coding-agent workflow
 
-Why this matters: Lab A and Lab B are separate Compose projects. Starting and inspecting them independently prevents one environment’s desired state from being mistaken for the other’s runtime evidence.
+Codex, Claude Code, or another suitable coding agent is optional. The manual
+investigation and deterministic commands remain usable without an agent. An
+agent may help explain commands, generate tests, or organize evidence, but it
+does not replace authorization, review, deterministic checks, or independent
+evaluation.
 
-Start Lab A:
+### Safety boundary
 
-```sh
+Run commands only against environments you own or are explicitly authorized
+to use. Do not add credentials, personal data, production data, or unrelated
+Docker projects. The PHP inspection endpoints are training diagnostics bound
+to loopback and must not be exposed publicly. Do not use exploit probes,
+production scans, docker system prune, broad AWS inventory, broad AWS cleanup,
+or account-wide security-setting changes.
+
+All commands below run from the VulHarness repository root unless stated
+otherwise. Local technical details are in the [Lab A README](../labs/local/lab-a/README.md)
+and [Lab B README](../labs/local/lab-b/README.md).
+
+## 3. Manual local investigation — Labs A and B
+
+This is the complete Hard Mode investigation. Finish it before moving to
+automation. The goal is to observe the runtime, compare it with the advisory,
+apply a scoped update, and independently verify the result.
+
+### 3.1 Check Docker and Compose readiness
+
+~~~bash
+docker info
+docker compose version
+~~~
+
+### 3.2 Start Lab A and Lab B
+
+Start Lab A, the fixed-version reference:
+
+~~~bash
 docker compose -f scenarios/php2shell/labs/local/lab-a/compose.lab-a.yaml up -d --build
-```
+~~~
 
 Reset Lab B to its initial configuration, then start it:
 
-```sh
+~~~bash
 docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.update.yaml down
 docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml pull
 docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml up -d
-```
+~~~
 
-The reset command affects only the explicitly named Lab B project. Do not use broad cleanup commands such as `docker system prune`.
+The reset affects only the explicitly named Lab B project. Do not use broad
+cleanup commands.
 
-Confirm both projects are running:
+### 3.3 Confirm both environments are running
 
-```sh
+~~~bash
 docker compose -f scenarios/php2shell/labs/local/lab-a/compose.lab-a.yaml ps
 docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml ps
-```
+~~~
 
 Expected initial state:
 
 | Lab | Browser address | Expected serving PHP | Purpose |
 | --- | --- | --- | --- |
-| Lab A | `http://127.0.0.1:8080` | 8.4.27 | First local runtime |
-| Lab B | `http://127.0.0.1:8082` | 8.4.26 | Before-remediation runtime |
+| Lab A | http://127.0.0.1:8080 | 8.4.27 | Fixed-version reference |
+| Lab B | http://127.0.0.1:8082 | 8.4.26 | Before-remediation target |
 
-Both ports bind only to `127.0.0.1`. They are not intended for public or remote exposure. Lab B’s version is below the upstream fixed threshold; that does not establish that the application is exploitable.
+Both ports bind only to 127.0.0.1.
 
-### Inspect the serving runtimes
+### 3.4 Inspect the actual HTTP-serving runtimes
 
-Why this matters: a version declared in a Compose file is desired configuration. The response produced through Nginx and PHP-FPM is evidence of the runtime currently serving the application.
+Open:
 
-Open these addresses in a browser:
+- [Lab A](http://127.0.0.1:8080)
+- [Lab B](http://127.0.0.1:8082)
 
-- Lab A: [http://127.0.0.1:8080](http://127.0.0.1:8080)
-- Lab B: [http://127.0.0.1:8082](http://127.0.0.1:8082)
-
-In each application, select **Inspect Runtime**. Record the PHP version, SAPI, and observation timestamp. Select **Reset Test** afterward to return the page to its initial state; this only clears the browser request state and does not stop or recreate containers.
+In each application, select **Inspect Runtime**. Record the PHP version, SAPI,
+and observation timestamp. Select **Reset Test** afterward; that resets only
+the browser request state and does not stop or recreate containers.
 
 Expected observations:
 
-```text
+~~~text
 Lab A: PHP 8.4.27, SAPI fpm-fcgi
 Lab B: PHP 8.4.26, SAPI fpm-fcgi
-```
+~~~
 
-Compare the observations with the [documented upstream fixed releases](../references.md). For PHP 8.4, both scenario advisories are fixed upstream in 8.4.27. Lab A is at that threshold. Lab B is below it and therefore warrants a remediation decision, while exploitability and vendor backports remain unassessed.
+### 3.5 Compare the observed versions with the advisory
 
-## Part C — Manual AWS investigation with Labs C and D
+For PHP 8.4, upstream fixes for both scenario advisories are present in
+8.4.27. Lab A is at that threshold. Lab B is below it and warrants a
+remediation decision. This comparison does not prove that Lab B is exploitable
+or that Lab A is non-exploitable.
 
-AWS is an optional extension of the core local workshop, not a prerequisite
-for completing it. Labs C and D use two separate EC2 instances and authenticated
-AWS Systems Manager access. The manual questions are the same: what is running,
-what evidence proves it, what permissions are in scope, and what remains
-unknown?
+### 3.6 Inspect the existing Lab B update configuration
 
-For an already authorized deployment, establish identity and inspect only the
-exact deployment scope:
+The merged fixed Compose configuration is read-only inspection of desired
+state. It does not redeploy the lab:
 
-```bash
-export AWS_PROFILE=vul-harness-lab-nov26
-export AWS_REGION=us-east-1
-aws sts get-caller-identity --profile "$AWS_PROFILE" --region "$AWS_REGION"
+~~~bash
+docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.update.yaml config --images
+~~~
+
+The output should include the pinned PHP 8.4.27 image:
+
+~~~text
+php:8.4.27-fpm-bookworm@sha256:b75642e8c89c321039f351466134df951576fb0f7017117b3931e9a19b908d6c
+~~~
+
+### 3.7 Apply the approved Lab B update
+
+Pull the fixed image and recreate only Lab B's PHP-FPM and Nginx services:
+
+~~~bash
+docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.update.yaml pull php-fpm
+docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.update.yaml up -d --force-recreate php-fpm web
+~~~
+
+### 3.8 Inspect the remediated runtime in the browser
+
+Manual runtime inspection is the first verification after remediation. Open
+[Lab B](http://127.0.0.1:8082), select **Inspect Runtime**, and record the PHP
+version, SAPI, and observation timestamp. Repeat the same inspection for
+[Lab A](http://127.0.0.1:8080) as the fixed-version reference. Select **Reset
+Test** after each observation.
+
+Expected browser observations:
+
+~~~text
+lab-b: PHP 8.4.27, fixed_upstream_version
+lab-a: PHP 8.4.27, fixed_upstream_version
+~~~
+
+Lab A should remain unchanged because the labs have separate Compose projects,
+containers, networks, and loopback ports.
+
+The deterministic Python checker is introduced in Auto Mode Section 5.1. Do
+not substitute its result for the first manual runtime observation here.
+
+### 3.9 Configuration intent versus runtime evidence
+
+The update override declaring PHP 8.4.27 is configuration intent. The HTTP
+response from the recreated PHP-FPM service is runtime evidence. A successful
+docker compose command alone does not prove that the intended image is serving
+requests.
+
+### 3.10 Reset Lab B when appropriate
+
+Before beginning Part B, reset Lab B to the expected before-state:
+
+~~~bash
+docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.update.yaml down
+docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml up -d
+~~~
+
+Confirm the reset with a fresh runtime check:
+
+~~~bash
+python3 scenarios/php2shell/checks/local-http-version/cli.py --target lab-b
+~~~
+
+The expected result is PHP 8.4.26 and potentially_affected_upstream_version.
+
+### 3.11 Local cleanup checkpoint
+
+If you are continuing to Part B, keep Labs A and B running. If you are ending
+the workshop here, stop and remove only the named projects:
+
+~~~bash
+docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml down
+docker compose -f scenarios/php2shell/labs/local/lab-a/compose.lab-a.yaml down
+~~~
+
+Do not remove unrelated containers or images.
+
+## 4. Manual AWS investigation — Labs C and D
+
+AWS is an optional extension of the local investigation. The security
+questions remain the same: what is running, what evidence proves it, what
+permissions are in scope, and what remains unknown?
+
+### 4.1 Configure AWS identity and deployment method
+
+Use an account, profile, region, and disposable deployment that you are
+authorized to use. `AWS_PROFILE` selects the local AWS CLI profile,
+`AWS_REGION` selects the deployment region, and `VULHARNESS_METHOD` selects one
+of the supported infrastructure wrappers. Define these values once and reuse
+them throughout Sections 4 and 7:
+
+~~~bash
+export AWS_PROFILE="REPLACE_WITH_YOUR_PROFILE"
+export AWS_REGION="us-east-1"
+export VULHARNESS_METHOD="aws-cli"
+aws configure list --profile "$AWS_PROFILE"
+aws sts get-caller-identity \
+  --profile "$AWS_PROFILE" \
+  --region "$AWS_REGION"
+~~~
+
+Use `cloudformation` or `terraform` instead of `aws-cli` when selecting those
+methods. Keep `VULHARNESS_METHOD` unchanged for every later SSM, evaluator, and
+harness command. Do not commit the profile, credentials, or deployment ID.
+
+The identity commands are read-only. `aws configure list` shows which local
+profile settings are available, and `aws sts get-caller-identity` confirms the
+authenticated AWS principal in the selected region. Successful identity output
+proves authentication only; it does not create infrastructure or prove that a
+lab is ready.
+
+`VULHARNESS_DEPLOYMENT_ID` is the unique deployment identifier returned by the
+selected wrapper. Do not invent one or set it before the wrapper has returned a
+value. The deployment setup in the next subsection captures it.
+
+### 4.2 Deploy Labs C and D
+
+For a new deployment, run exactly one matching wrapper. Each wrapper generates
+an ID when no ID is supplied and prints or includes that ID in its deployment
+output. Copy the generated value into the shell before running `status`:
+
+- `aws-lab.sh` creates and inspects AWS CLI-managed infrastructure.
+- `cf-lab.sh` manages the CloudFormation stack lifecycle.
+- `tf-lab.sh` manages Terraform infrastructure and local state.
+
+These `deploy` commands change infrastructure only. They do not install Docker,
+bootstrap Compose, inspect PHP, or validate the serving runtime.
+
+AWS CLI:
+
+~~~bash
+./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" deploy
+~~~
+
+CloudFormation:
+
+~~~bash
+./scenarios/php2shell/labs/aws/deployment/cloudformation/cf-lab.sh \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" deploy
+~~~
+
+Terraform:
+
+~~~bash
+./scenarios/php2shell/labs/aws/deployment/terraform/tf-lab.sh \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" deploy
+~~~
+
+Run only the command matching `VULHARNESS_METHOD`. The wrappers identify the
+generated value as follows: AWS CLI prints `Deployment ID: vh-cli-...`; Terraform
+prints `Terraform deployment applied: vh-tf-...`; CloudFormation prints a stack
+name containing `vulharness-php2shell-cloudformation-vh-cfn-...`. Copy the
+`vh-cli-...`, `vh-tf-...`, or `vh-cfn-...` value shown by the selected wrapper,
+then set the value you observed:
+
+~~~bash
+export VULHARNESS_DEPLOYMENT_ID="REPLACE_WITH_DEPLOYMENT_ID_FROM_OUTPUT"
+~~~
+
+If an authorized deployment already exists, obtain its ID from the prior
+wrapper output, the deployment owner, or the local Terraform state/stack name;
+do not guess it. Set that exact ID and use the matching method's read-only
+status command:
+
+~~~bash
+export VULHARNESS_DEPLOYMENT_ID="REPLACE_WITH_EXISTING_DEPLOYMENT_ID"
+
 ./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh \
   --profile "$AWS_PROFILE" --region "$AWS_REGION" \
-  --deployment-id <deployment-id> status
-```
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" status
+~~~
 
-The manual AWS workflow then separates EC2 inventory, IAM instance-profile
-scope, SSM `Online` status, loopback runtime collection, PHP version evidence,
-and cleanup evidence. SSM registration proves management-plane connectivity;
-it does not prove Docker, Compose, PHP, or runtime readiness. AWS CLI,
-CloudFormation, and Terraform are supported provisioning methods, but a
-participant chooses at most one for a deployment cycle and does not need to
-learn all three. See the [AWS implementation guide](../labs/aws/README.md)
-for the detailed, optional cloud workflow. Do not deploy live AWS resources for
-the core local workshop.
+For CloudFormation or Terraform, use its corresponding wrapper path and keep
+the same method value. A status result must confirm the exact ownership and
+method tags before reuse. Do not combine methods, adopt unrelated resources,
+or start a second deployment when the existing one is still available.
 
-## Part D — From manual commands to deterministic automation
+### 4.3 Confirm AWS deployment scope
 
-Why this matters: the checker repeats the version comparison consistently while retaining the raw endpoint, SAPI, timestamp, per-CVE result, and explicit limitations.
+Lab C is the cloud fixed-version reference at PHP 8.4.27. Lab D starts at
+PHP 8.4.26 and is the remediation target. Each lab runs on its own EC2
+instance. SSM Online proves management-plane registration only; it does not
+prove Docker, Compose, PHP, or runtime readiness.
 
-Check each lab and then both together:
+Use the selected provisioning method's read-only `status` command. It verifies
+the exact deployment identity and ownership boundary without creating or
+deleting resources:
 
-```sh
+#### Deployment status and ownership
+
+~~~bash
+./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" status
+
+./scenarios/php2shell/labs/aws/deployment/cloudformation/cf-lab.sh \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" status
+
+./scenarios/php2shell/labs/aws/deployment/terraform/tf-lab.sh \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" status
+~~~
+
+Run only the command for the method used to create the deployment. A successful
+status check means the wrapper can find the exact tagged deployment and its
+expected infrastructure; it is not PHP runtime evidence. Inspect that exactly
+the expected Lab C and Lab D resources are in scope, ownership and method tags
+match, the IAM instance profile has the documented SSM scope, both instances
+are registered with SSM, and any protected reference instance is excluded. See
+the [AWS lab plan](../labs/aws/README.md) and the
+[method READMEs](../labs/aws/deployment/) for permissions and recovery detail.
+
+### 4.4 Inspect and investigate PHP runtimes
+
+Before changing runtime state, confirm the variables point to the deployment
+you just created or safely reused:
+
+~~~bash
+printf 'Profile: %s\nRegion: %s\nMethod: %s\nDeployment ID: %s\n' \
+  "$AWS_PROFILE" "$AWS_REGION" \
+  "$VULHARNESS_METHOD" "$VULHARNESS_DEPLOYMENT_ID"
+~~~
+
+The shared `ssm_runtime.py` script performs supported runtime actions through
+authenticated AWS Systems Manager. `bootstrap` changes the selected EC2
+runtime by transferring approved assets, installing Docker/Compose when
+needed, validating the Compose model, and starting the selected lab. It does
+not use SSH or open inbound access. Run it for both labs, then use the
+read-only `aws_evaluate.py` script for the initial evidence collection:
+
+~~~bash
+python3 scenarios/php2shell/labs/aws/deployment/shared/ssm_runtime.py bootstrap \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method "$VULHARNESS_METHOD" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --lab-id lab-c
+
+python3 scenarios/php2shell/labs/aws/deployment/shared/ssm_runtime.py bootstrap \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method "$VULHARNESS_METHOD" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --lab-id lab-d
+
+python3 scenarios/php2shell/evals/aws-lifecycle/aws_evaluate.py \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method "$VULHARNESS_METHOD" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" \
+  --include-ssm --phase initial
+~~~
+
+Run both bootstrap commands before the initial evaluation. The evaluator
+separates infrastructure inventory, SSM connectivity, container state, Compose
+state, PHP version, SAPI, timestamp, and collection limitations. A running EC2
+instance or SSM Online status is not PHP runtime evidence by itself.
+
+Do not use SSH, open inbound security-group rules, public tunnels, or arbitrary
+remote commands. CloudFormation and Terraform provision infrastructure; they do
+not inspect the runtime. Runtime evidence comes from the shared SSM workflow
+and evaluator.
+
+### 4.5 Remediate, verify, and reset Lab D
+
+Compare the initial Lab C and Lab D observations with the upstream fixed
+release. Lab C should remain the unchanged PHP 8.4.27 reference. Lab D should
+show PHP 8.4.26 before remediation. The `remediate` action changes only Lab D;
+the evaluator command that follows is read-only and checks fresh runtime
+evidence:
+
+~~~bash
+python3 scenarios/php2shell/labs/aws/deployment/shared/ssm_runtime.py remediate \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method "$VULHARNESS_METHOD" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --lab-id lab-d
+
+python3 scenarios/php2shell/evals/aws-lifecycle/aws_evaluate.py \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method "$VULHARNESS_METHOD" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" \
+  --include-ssm --phase remediated
+~~~
+
+Reset only Lab D and collect separate reset evidence:
+
+~~~bash
+python3 scenarios/php2shell/labs/aws/deployment/shared/ssm_runtime.py reset \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method "$VULHARNESS_METHOD" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --lab-id lab-d
+
+python3 scenarios/php2shell/evals/aws-lifecycle/aws_evaluate.py \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method "$VULHARNESS_METHOD" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" \
+  --include-ssm --phase reset
+~~~
+
+Expected transitions are: Lab C remains PHP 8.4.27; Lab D is PHP 8.4.26 in
+the initial state, PHP 8.4.27 after remediation, and PHP 8.4.26 after reset.
+These observations must come from runtime evidence returned through SSM, not
+from a successful command exit alone. Stopped, unreachable, malformed, or
+uninspectable instances remain unknown or inconclusive and must never be
+inferred to be fixed.
+
+### 4.6 AWS cleanup and absence verification
+
+Keep the deployment running if you are continuing to Section 7 or Harness
+Mode. Do not clean it up before those workflows finish. When the AWS journey is
+complete, use the selected wrapper's `cleanup --dry-run` first. This is
+read-only: inspect the exact deployment-owned resources and any dependency
+blockers before approving deletion. Example for AWS CLI:
+
+~~~bash
+./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" cleanup --dry-run
+
+./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" cleanup
+~~~
+
+Use the corresponding `cf-lab.sh` or `tf-lab.sh` command for the selected
+method. The dry-run output is the deletion scope to review. Confirmed cleanup
+changes AWS infrastructure and requires explicit authorization plus the exact
+`DELETE <deployment-id>` interactive confirmation. For Terraform, retain local
+state until absence verification succeeds. After cleanup, run the independent
+read-only `--expect-absent` verification:
+
+~~~bash
+python3 scenarios/php2shell/evals/aws-lifecycle/aws_evaluate.py \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method "$VULHARNESS_METHOD" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --expect-absent
+~~~
+
+`--expect-absent` verifies that exact deployment resources are gone; it does
+not delete anything. If cleanup is incomplete or blocked by an external
+dependency such as GuardDuty, do not broaden the scope. Keep the deployment ID,
+review the wrapper's recovery/status output, resolve the authorized blocker,
+and rerun the exact cleanup and absence check. Raw AWS evidence remains local
+private evidence under the ignored `docs/evidence/aws/` path; never commit or
+upload it.
+
+# Part B — Auto Mode: Deterministic Automation
+
+## 5. From manual investigation to automated checks
+
+Security practitioners already know how to perform the investigation. The
+scaling question is how to repeat it consistently across environments without
+losing evidence provenance or uncertainty.
+
+There are three complementary modes:
+
+- **Manual investigation:** a practitioner performs bounded commands and
+  interprets the evidence.
+- **Deterministic automation:** scripts collect defined fields, apply stable
+  comparison rules, and return repeatable results.
+- **AI-assisted development:** a coding agent can help translate documented
+  commands, evidence fields, expected outcomes, and tests into deterministic
+  code for human review.
+
+Python is the existing implementation language, not a requirement for the
+concept. The deterministic checker owns version-comparison semantics; an agent
+must not invent advisory rules or treat its own conclusion as evidence.
+
+### 5.1 Run the local version checker
+
+~~~bash
 python3 scenarios/php2shell/checks/local-http-version/cli.py --target lab-a
 python3 scenarios/php2shell/checks/local-http-version/cli.py --target lab-b
 python3 scenarios/php2shell/checks/local-http-version/cli.py --all
-```
+~~~
 
-Expected classifications:
+Expected classifications before remediation are:
 
-```text
+~~~text
 lab-a: fixed_upstream_version
 lab-b: potentially_affected_upstream_version
-```
+~~~
 
-Start Hello World 2.0 in this terminal:
+The checker retains the raw endpoint, SAPI, observation timestamp, per-CVE
+classification, and limitations. It accepts only the explicitly configured
+loopback targets.
 
-```sh
+### 5.2 Use Hello World 2.0
+
+Start the local dashboard:
+
+~~~bash
 python3 scenarios/php2shell/checks/local-http-version/dashboard.py
-```
+~~~
 
-Leave that process running and open [http://127.0.0.1:8081](http://127.0.0.1:8081). Select **Check Runtimes**.
+Open [http://127.0.0.1:8081](http://127.0.0.1:8081) and select **Check
+Runtimes**. Expand evidence details to inspect the configured endpoint,
+version, SAPI, timestamp, and CVE results. The grey **Remediate** controls are
+deliberately disabled: the dashboard cannot edit Compose files, run Docker
+commands, or update containers. After an approved update, use **Recheck**.
 
-The inventory has one row per explicitly configured endpoint. Expand the evidence details to see each CVE result. The grey **Remediate** buttons are deliberately disabled: the dashboard cannot edit Compose files, run Docker commands, or update containers. Later, **Recheck** collects fresh evidence after you perform an approved update.
+### 5.3 Automation cleanup checkpoint
 
-Use a second terminal in the repository root for the remaining commands.
+When finished with the dashboard, return to its terminal and press Ctrl+C. If
+continuing to Section 6, keep Labs A and B running. If ending the exercise,
+follow the scoped local cleanup in [Section 3.11](#311-local-cleanup-checkpoint).
+Do not remove containers required by subsequent steps.
 
-## Part E — Independent evaluation
+## 6. Independent evaluation
 
-### Establish the before-remediation state
+An evaluation is a repeatable comparison between expected outcomes and observed
+evidence. It is independent of the checker, harness, coding agent, or provider
+that collected the evidence.
 
-Why this matters: the evaluation turns the documented before-state expectation into a repeatable PASS/FAIL decision without duplicating the checker’s advisory comparison logic.
+Because Hard Mode remediated Lab B, reset it before running this lifecycle:
 
-Run:
+~~~bash
+docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.update.yaml down
+docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml up -d
+~~~
 
-```sh
+### 6.1 Before-remediation evaluation
+
+~~~bash
 python3 scenarios/php2shell/evals/remediation-lifecycle/evaluate.py --state before
-```
+~~~
 
 Expected summary:
 
-```text
+~~~text
 State: before
 Result: PASS
 Observed PHP version: 8.4.26
 Expected PHP version: 8.4.26
-```
+~~~
 
-Both CVEs must be `potentially_affected_upstream_version`. PASS establishes that Lab B’s HTTP-serving runtime matches this exercise’s documented before-state. It does not prove vulnerability or exploitability.
+Both CVEs must be potentially_affected_upstream_version. PASS establishes
+that Lab B's HTTP-serving runtime matches the documented before-state; it does
+not prove vulnerability or exploitability.
 
-### Inspect the configuration-only state
+### 6.2 Configuration-only evaluation
 
-Why this matters: changing deployment intent is not the same as changing the running service.
+Inspect the merged desired configuration without redeploying:
 
-Inspect the merged fixed Compose configuration. This command is read-only and does not redeploy the lab:
-
-```sh
+~~~bash
 docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.update.yaml config --images
-```
-
-The output should include:
-
-```text
-php:8.4.27-fpm-bookworm@sha256:b75642e8c89c321039f351466134df951576fb0f7017117b3931e9a19b908d6c
-```
-
-Do not run `up` yet. Evaluate the configuration-only state:
-
-```sh
 python3 scenarios/php2shell/evals/remediation-lifecycle/evaluate.py --state config-only
-```
+~~~
 
-Expected result: PASS. The evaluator confirms two separate facts:
+Expected result: PASS. The evaluator confirms that the desired Compose model
+selects PHP 8.4.27 while the runtime still serving HTTP remains PHP 8.4.26.
+Configuration intent and deployed runtime are separate facts.
 
-- The merged desired Compose model selects PHP 8.4.27.
-- The runtime still serving HTTP is PHP 8.4.26 and remains `potentially_affected_upstream_version`.
+### 6.3 Apply and evaluate the after-state
 
-The `before` and `config-only` states cannot be distinguished from HTTP evidence alone. The additional read-only Compose inspection supplies the configuration-intent evidence.
+Apply the same scoped update used in Hard Mode:
 
-### Apply the Lab B update
-
-Why this matters: remediation is not deployed until the relevant service is recreated from the approved fixed configuration.
-
-Pull the fixed PHP image for Lab B:
-
-```sh
+~~~bash
 docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.update.yaml pull php-fpm
-```
-
-Recreate only Lab B’s PHP-FPM and Nginx services:
-
-```sh
 docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.update.yaml up -d --force-recreate php-fpm web
-```
-
-Verify the serving runtimes independently:
-
-```sh
-python3 scenarios/php2shell/checks/local-http-version/cli.py --target lab-b
-python3 scenarios/php2shell/checks/local-http-version/cli.py --target lab-a
-```
-
-Expected:
-
-```text
-lab-b: PHP 8.4.27, fixed_upstream_version
-lab-a: PHP 8.4.27, fixed_upstream_version
-```
-
-Lab A should remain unchanged because Lab B has its own Compose project, containers, networks, and loopback port.
-
-### Independently verify and evaluate the deployed runtime
-
-Why this matters: independent observation verifies what was deployed rather than trusting the update command’s success message.
-
-Collect a combined CLI report:
-
-```sh
 python3 scenarios/php2shell/checks/local-http-version/cli.py --all
-```
-
-Return to Hello World 2.0 and select **Recheck**. Lab B should now show PHP 8.4.27 and `fixed_upstream_version`.
-
-Run the after-state evaluation:
-
-```sh
 python3 scenarios/php2shell/evals/remediation-lifecycle/evaluate.py --state after
-```
+~~~
 
-PASS requires:
+PASS requires HTTP-observed PHP 8.4.27, fixed classifications for both CVEs,
+and a read-only running-container inspection identifying the approved fixed
+PHP-FPM image. It does not prove non-exploitability or complete remediation.
 
-- HTTP-observed PHP 8.4.27 from Lab B
-- `fixed_upstream_version` for CVE-2026-109618
-- `fixed_upstream_version` for CVE-2026-109619
-- A read-only running-container inspection that identifies the approved fixed PHP-FPM image
+### 6.4 Reset and cleanup checkpoint
 
-PASS verifies the version and lifecycle evidence for this exercise. It does not prove non-exploitability, validate every deployment condition, or establish full vulnerability remediation.
+Reset Lab B if another participant or exercise needs the expected baseline:
 
-## Part F — Introduce VulHarness
+~~~bash
+docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.update.yaml down
+docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml up -d
+python3 scenarios/php2shell/evals/remediation-lifecycle/evaluate.py --state before
+~~~
 
-Only after the manual investigation, deterministic automation, and independent
-evaluation does the unified harness become useful. The entry point is:
+If you are continuing into Harness Mode, keep Labs A and B running and do not
+run this cleanup checkpoint yet; Section 9.1 needs those projects available.
+When ending the local exercise, stop the dashboard if it is running and remove
+only the named Lab B and Lab A projects:
 
-```text
+~~~bash
+docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml down
+docker compose -f scenarios/php2shell/labs/local/lab-a/compose.lab-a.yaml down
+~~~
+
+## 7. Automated AWS workflows
+
+The AWS automation uses the same investigation questions with explicit
+deployment scope and machine-readable evidence. It is optional and can incur
+cost. Choose exactly one infrastructure method per lifecycle:
+
+1. [AWS CLI deployment](../labs/aws/deployment/cli/README.md)
+2. [CloudFormation deployment](../labs/aws/deployment/cloudformation/README.md)
+3. [Terraform deployment](../labs/aws/deployment/terraform/README.md)
+
+CloudFormation and Terraform are provisioning alternatives, not substitutes
+for SSM runtime inspection. The shared SSM workflow and independent evaluator
+remain the runtime and assessment path.
+
+If you start directly in Auto Mode, first review
+[Section 4.1](#41-configure-aws-identity-and-deployment-method) and
+[Section 4.2](#42-deploy-labs-c-and-d) to define the AWS variables and obtain
+one authorized deployment ID. Reuse that deployment if it still exists; do not
+run a second `deploy` command just because you entered through Section 7.
+
+### 7.1 Reuse the Section 4 deployment
+
+Continue with the same `AWS_PROFILE`, `AWS_REGION`, `VULHARNESS_METHOD`, and
+`VULHARNESS_DEPLOYMENT_ID` values established in Section 4. If that deployment
+still exists, do not run another wrapper `deploy` command. Run the selected
+method's status command to confirm that the exact deployment remains owned by
+the selected method:
+
+~~~bash
+./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" status
+~~~
+
+For a CloudFormation deployment, use
+`scenarios/php2shell/labs/aws/deployment/cloudformation/cf-lab.sh`; for a
+Terraform deployment, use
+`scenarios/php2shell/labs/aws/deployment/terraform/tf-lab.sh`. Keep
+`VULHARNESS_METHOD` aligned with that wrapper. If the Section 4 deployment was
+cleaned up, return to [Section 4.1](#41-configure-aws-identity-and-deployment-method),
+create one fresh deployment with the selected wrapper, capture its generated
+ID, and then return here. This avoids duplicate deployments and unnecessary
+AWS cost.
+
+The provisioning wrappers create infrastructure only. They do not install
+Docker, start Compose, inspect PHP, or run arbitrary commands through SSM.
+
+### 7.2 Bootstrap through authenticated SSM
+
+Use the `VULHARNESS_METHOD` value defined in Section 4.1. The exact mapping is:
+
+| Provisioning method | `VULHARNESS_METHOD` | Wrapper |
+| --- | --- | --- |
+| AWS CLI | `aws-cli` | `scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh` |
+| CloudFormation | `cloudformation` | `scenarios/php2shell/labs/aws/deployment/cloudformation/cf-lab.sh` |
+| Terraform | `terraform` | `scenarios/php2shell/labs/aws/deployment/terraform/tf-lab.sh` |
+
+Then bootstrap both labs through the shared workflow:
+
+~~~bash
+python3 scenarios/php2shell/labs/aws/deployment/shared/ssm_runtime.py bootstrap \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method "$VULHARNESS_METHOD" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --lab-id lab-c
+
+python3 scenarios/php2shell/labs/aws/deployment/shared/ssm_runtime.py bootstrap \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method "$VULHARNESS_METHOD" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --lab-id lab-d
+~~~
+
+The workflow transfers approved assets with integrity checks, installs Docker
+and Compose on Amazon Linux 2023, validates the Compose model, and starts the
+selected lab. It does not use SSH or open inbound access.
+
+### 7.3 Discover, assess, remediate, and reset
+
+Run the initial infrastructure, SSM, Docker, Compose, and PHP evaluation:
+
+~~~bash
+python3 scenarios/php2shell/evals/aws-lifecycle/aws_evaluate.py \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method "$VULHARNESS_METHOD" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" \
+  --include-ssm --phase initial
+~~~
+
+The evaluator queries only exact project, scenario, deployment, and method
+tags. It does not scan an entire account. Evidence is written locally under
+the ignored `docs/evidence/aws/` path and must not be committed or uploaded.
+
+Update only Lab D and evaluate the remediated state:
+
+~~~bash
+python3 scenarios/php2shell/labs/aws/deployment/shared/ssm_runtime.py remediate \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method "$VULHARNESS_METHOD" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --lab-id lab-d
+
+python3 scenarios/php2shell/evals/aws-lifecycle/aws_evaluate.py \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method "$VULHARNESS_METHOD" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" \
+  --include-ssm --phase remediated
+~~~
+
+Reset Lab D and collect separate reset evidence:
+
+~~~bash
+python3 scenarios/php2shell/labs/aws/deployment/shared/ssm_runtime.py reset \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method "$VULHARNESS_METHOD" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --lab-id lab-d
+
+python3 scenarios/php2shell/evals/aws-lifecycle/aws_evaluate.py \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method "$VULHARNESS_METHOD" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" \
+  --include-ssm --phase reset
+~~~
+
+Stopped, unreachable, malformed, or uninspectable instances remain unknown or
+inconclusive. They must never be inferred to be fixed.
+
+### 7.4 Scoped cleanup and absence verification
+
+If the AWS deployment is no longer needed after Auto Mode, follow the
+independent [Section 4.6 cleanup and absence procedure](#46-aws-cleanup-and-absence-verification).
+It contains the method-specific dry-run, exact-scope approval, interactive
+confirmation, and `--expect-absent` verification. If continuing into Harness
+Mode, keep the deployment and the Section 4 variables available instead.
+
+### 7.5 Method limitations and future CI/CD use
+
+The detailed AWS READMEs document IAM permissions, provider constraints,
+partial-deployment recovery, VPC CIDR conflicts, ownership tags, costs,
+GuardDuty cleanup constraints, and troubleshooting. The evaluator distinguishes
+configured infrastructure, SSM connectivity, serving runtime, version
+classification, and demonstrated exploitability.
+
+CI/CD could eventually invoke bounded checks against an authorized build or
+deployment, but no production CI/CD integration is validated or implemented by
+this workshop.
+
+# Part C — Harness Mode: VulHarness
+
+## 8. Why introduce a harness?
+
+Disconnected commands can be useful for learning, but they become difficult to
+repeat across environments. A harness provides one scope-aware entry point
+while preserving the underlying checks, evaluators, deployment wrappers, and
+approval boundaries.
+
+VulHarness coordinates existing operations; it does not replace security
+judgment or turn a version comparison into proof of exposure.
+
+| Component | Responsibility |
+| --- | --- |
+| Labs | Provide scenario-specific, authorized environments |
+| Checks | Collect or verify concrete evidence |
+| Evaluations | Compare observed evidence with expected outcomes independently |
+| Orchestration | Validate scope, approvals, command routing, and recovery hints |
+| Evidence | Preserve source, timestamp, scope, freshness, and limitations |
+| Approvals | Keep remediation and destructive operations explicit |
+
+## 9. Run VulHarness
+
+The implemented entry point is:
+
+~~~text
 scripts/vulharness-php2shell.py
-```
-
-It coordinates the existing Compose projects, AWS deployment wrappers, shared
-SSM runtime actions, deterministic checks, and independent evaluators. It does
-not replace those components or duplicate their PHP advisory, AWS ownership,
-GuardDuty, or evidence-comparison logic.
+~~~
 
 Run it from the repository root. Mutating operations require an
-operation-specific approval token; there is no generic `--yes` option.
+operation-specific approval token; there is no generic yes option. The local
+and AWS lifecycles below are intentionally separate. Complete the local path
+without cleaning up if you are continuing to the next local step.
 
-| Goal | Local command | AWS command shape |
-| --- | --- | --- |
-| Check prerequisites | `python3 scripts/vulharness-php2shell.py preflight --env local` | `python3 scripts/vulharness-php2shell.py preflight --env aws --method aws-cli --profile vul-harness-lab-nov26 --region us-east-1` |
-| Start/deploy | `python3 scripts/vulharness-php2shell.py setup --env local --approve setup` | `python3 scripts/vulharness-php2shell.py setup --env aws --method aws-cli --profile vul-harness-lab-nov26 --region us-east-1 --approve setup` |
-| Inspect/status | `python3 scripts/vulharness-php2shell.py inspect --env local` | `python3 scripts/vulharness-php2shell.py status --env aws --method aws-cli --deployment-id <id>` |
-| Assess | `python3 scripts/vulharness-php2shell.py assess --env local --lab lab-b --state before` | `python3 scripts/vulharness-php2shell.py assess --env aws --method aws-cli --deployment-id <id> --phase initial` |
-| Remediate/reset | `python3 scripts/vulharness-php2shell.py remediate --env local --lab lab-b --approve remediate` | `python3 scripts/vulharness-php2shell.py remediate --env aws --method aws-cli --deployment-id <id> --lab lab-d --approve remediate` |
-| Verify | `python3 scripts/vulharness-php2shell.py verify --env local` | `python3 scripts/vulharness-php2shell.py verify --env aws --method aws-cli --deployment-id <id> --phase remediated` |
-| Cleanup | `python3 scripts/vulharness-php2shell.py cleanup --env local --lab lab-a --dry-run` | `python3 scripts/vulharness-php2shell.py cleanup --env aws --method aws-cli --deployment-id <id> --dry-run` |
+### 9.1 Local lifecycle
 
-AWS `setup` deploys both EC2 instances with the selected independent method,
-then invokes the shared SSM bootstrap for Lab C and Lab D. It stops on a
-partial failure and retains the deployment identity for recovery. A new AWS
-deployment generates an ID and retains metadata under the ignored
-`.vulharness-orchestration/deployments/` directory. Resume with the same
-`--deployment-id` or `VULHARNESS_DEPLOYMENT_ID`; do not switch methods or adopt
-another deployment.
+Check prerequisites, start the named local projects, and inspect their status:
 
-After confirmed cleanup, run the independent absence evaluation:
+~~~bash
+python3 scripts/vulharness-php2shell.py preflight --env local
+python3 scripts/vulharness-php2shell.py setup --env local --approve setup
+python3 scripts/vulharness-php2shell.py status --env local
+python3 scripts/vulharness-php2shell.py inspect --env local
+~~~
 
-```bash
+Assess Lab B's baseline, then start the dashboard in a second terminal. Use its
+local page, press Ctrl+C in that terminal when finished, and return to the
+original terminal for remediation and verification:
+
+~~~bash
+python3 scripts/vulharness-php2shell.py assess \
+  --env local --lab lab-b --state before
+python3 scripts/vulharness-php2shell.py dashboard --env local
+python3 scripts/vulharness-php2shell.py remediate \
+  --env local --lab lab-b --approve remediate
+python3 scripts/vulharness-php2shell.py verify --env local
+~~~
+
+The dashboard command may remain active while its local page is used. The
+remediation command is the approved harness action; it does not turn the
+dashboard's disabled remediation controls into an executable action. A local
+verification after remediation should observe the fixed Lab B runtime. To
+exercise reset and demonstrate the full state transition, reset Lab B and
+assess it again:
+
+~~~bash
+python3 scripts/vulharness-php2shell.py reset \
+  --env local --lab lab-b --approve reset
+python3 scripts/vulharness-php2shell.py assess \
+  --env local --lab lab-b --state before
+~~~
+
+Do not clean up Labs A or B until all local harness steps are complete. Review
+the cleanup target list first, then perform only the named cleanup:
+
+~~~bash
+python3 scripts/vulharness-php2shell.py cleanup \
+  --env local --lab lab-b --dry-run
+python3 scripts/vulharness-php2shell.py cleanup \
+  --env local --lab lab-b --approve cleanup
+python3 scripts/vulharness-php2shell.py cleanup \
+  --env local --lab lab-a --dry-run
+python3 scripts/vulharness-php2shell.py cleanup \
+  --env local --lab lab-a --approve cleanup
+~~~
+
+### 9.2 AWS lifecycle
+
+The AWS harness uses the exact `VULHARNESS_METHOD` and
+`VULHARNESS_DEPLOYMENT_ID` established in Section 4. Do not replace them with
+`aws-cli` or a new placeholder when continuing with CloudFormation or
+Terraform. The harness requires a deployment ID for `status`, `inspect`,
+`assess`, `remediate`, `verify`, `reset`, and `cleanup`.
+
+`setup` is the exception: if you pass the existing deployment ID, it resumes
+that exact deployment after validating ownership; if you omit the ID, the
+implementation generates a new method-specific ID, writes local orchestration
+metadata, deploys infrastructure, bootstraps both labs, and prints the new ID.
+To avoid an unintended duplicate deployment, reuse the Section 4 ID whenever
+that deployment still exists. If it was cleaned up, return to
+[Section 4.1](#41-configure-aws-identity-and-deployment-method)
+and create one fresh deployment before continuing here.
+
+Preflight and status validate the selected scope; setup performs the selected
+deployment and shared SSM bootstrap for Labs C and D:
+
+~~~bash
+python3 scripts/vulharness-php2shell.py preflight \
+  --env aws --method "$VULHARNESS_METHOD" \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION"
+python3 scripts/vulharness-php2shell.py setup \
+  --env aws --method "$VULHARNESS_METHOD" \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --approve setup
+python3 scripts/vulharness-php2shell.py status \
+  --env aws --method "$VULHARNESS_METHOD" \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID"
+~~~
+
+Assess the initial state, remediate only Lab D, verify the remediated state,
+and reset Lab D:
+
+~~~bash
+python3 scripts/vulharness-php2shell.py assess \
+  --env aws --method "$VULHARNESS_METHOD" \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --phase initial
+python3 scripts/vulharness-php2shell.py remediate \
+  --env aws --method "$VULHARNESS_METHOD" \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --lab lab-d \
+  --approve remediate
 python3 scripts/vulharness-php2shell.py verify \
-  --env aws --method aws-cli --deployment-id <id> --expect-absent
-```
+  --env aws --method "$VULHARNESS_METHOD" \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --phase remediated
+python3 scripts/vulharness-php2shell.py reset \
+  --env aws --method "$VULHARNESS_METHOD" \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --lab lab-d \
+  --approve reset
+python3 scripts/vulharness-php2shell.py verify \
+  --env aws --method "$VULHARNESS_METHOD" \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --phase reset
+~~~
 
-The harness returns `0` for success, `1` for an invoked failure, `2` for an
-invalid or incompatible request, `3` for a missing prerequisite, and `4` for a
-partial/unhealthy or externally blocked AWS state. `--output json` includes
-the invoked scope, child commands, redacted output, and evidence directory.
-Confirmed AWS cleanup remains interactive and requires the underlying exact
-`DELETE <deployment-id>` confirmation. GuardDuty-managed endpoints remain an
-external dependency; the harness does not change GuardDuty or account-level
-security settings.
+The harness's AWS implementation has offline/mock regression coverage; this
+sequence is not a claim of live AWS validation. Do not call cleanup until the
+AWS lifecycle is complete. Review the exact deployment targets with a dry run,
+then approve confirmed cleanup using the same deployment ID:
 
-## Part G — Repository architecture
+~~~bash
+python3 scripts/vulharness-php2shell.py cleanup \
+  --env aws --method "$VULHARNESS_METHOD" \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --dry-run
+python3 scripts/vulharness-php2shell.py cleanup \
+  --env aws --method "$VULHARNESS_METHOD" \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --approve cleanup
+python3 scripts/vulharness-php2shell.py verify \
+  --env aws --method "$VULHARNESS_METHOD" \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --expect-absent
+~~~
 
-The PHP2Shell implementation is a reference scenario, not a generic scenario
-registry or automatic agent platform:
+Confirmed AWS cleanup remains interactive and requires the exact
+deployment-specific confirmation. Setup stops on partial failure and retains
+the deployment identity for recovery; resume with the same method and ID only
+after reviewing exact ownership tags. The harness does not adopt unrelated
+resources.
 
-```text
+### 9.3 Harness result semantics
+
+The JSON output contains invoked scope, child commands, redacted output, and
+the local evidence directory. Exit codes are:
+
+- 0: requested operation completed successfully.
+- 1: invoked component failed or reported an ordinary failed evaluation.
+- 2: invalid, incompatible, or insufficiently scoped command.
+- 3: required local executable or prerequisite is unavailable.
+- 4: partial, unhealthy, or externally blocked AWS state.
+
+Do not interpret a successful setup as proof of PHP runtime readiness or a
+successful version comparison as proof of exploitability. Infrastructure,
+SSM, runtime, version classification, remediation, reset, and cleanup absence
+remain separate evidence claims.
+
+## 10. Repository architecture and contributions
+
+The PHP2Shell implementation is a reference scenario, not a generic registry
+or automatic agent platform:
+
+~~~text
 scripts/vulharness-php2shell.py       scenario-specific orchestration
 scenarios/php2shell/scenario.yaml     scenario identity and metadata
 scenarios/php2shell/references.md     advisory and technical references
@@ -348,426 +1130,194 @@ scenarios/php2shell/labs/             controlled local/AWS environments
 scenarios/php2shell/checks/           deterministic evidence collection
 scenarios/php2shell/evals/            independent expected-state evaluations
 scenarios/php2shell/walkthroughs/     participant learning journeys
-docs/evidence/                         local evidence; raw AWS output is ignored
 docs/architecture.md                  framework boundaries and future direction
-```
+~~~
 
 Labs own environment configuration. Checks collect concrete evidence.
 Evaluations compare observed evidence with expected outcomes independently of
-the harness or any coding agent. Walkthroughs explain the learning journey;
-implementation READMEs hold detailed technical commands. The [architecture
-document](../../../docs/architecture.md) defines the separation.
+the harness or a coding agent. Walkthroughs explain the learning journey;
+technical READMEs hold implementation commands.
 
-## 8. AWS implementation and lifecycle reference
+Read the [architecture document](../../../docs/architecture.md),
+[CONTRIBUTING.md](../../../CONTRIBUTING.md), and
+[scenario development guide](../../../docs/scenario-development-guide.md) to
+understand the boundaries between reusable components and scenario-specific
+implementation.
 
-> **AWS Labs C/D — infrastructure first, then shared SSM runtime evaluation**
+# Part D — Beyond the Harness: Skills and Agents
 
-This stage describes the Scenario 1 AWS journey for [Lab C and Lab D](../labs/aws/README.md). AWS CLI, CloudFormation, and Terraform infrastructure paths are available. They provision infrastructure only until the shared SSM runtime stage is run; they do not automatically establish PHP runtime readiness.
+## 11. Reusable coding-agent skills
 
-Participants choose exactly one independent infrastructure deployment method:
+A coding-agent skill is a reusable set of instructions or a practitioner
+procedure that tells an agent how to perform a bounded capability: for example,
+inspect a runtime, collect evidence, validate a result, or prepare a report.
 
-1. AWS CLI — [CLI deployment](../labs/aws/deployment/cli/README.md).
-2. CloudFormation — [CloudFormation deployment](../labs/aws/deployment/cloudformation/README.md).
-3. Terraform — [Terraform deployment](../labs/aws/deployment/terraform/README.md).
+A future PHP investigation skill could reuse documented commands, evidence
+fields, authorization boundaries, and validation methods. It must still perform
+fresh advisory analysis for a new PHP CVE. A new advisory cannot inherit old
+affected-version rules merely because the runtime or product name is similar.
 
-Do not combine methods or adopt resources created by another method. The existing `php2shell-container` instance is not part of this exercise and must not be modified.
+Reusable skills are future work unless implemented evidence exists. Manual
+walkthroughs and deterministic checks remain first-class.
 
-The intended cloud journey remains:
+## 12. Future agent orchestration
 
-```text
-Discover → Inspect → Compare → Update → Verify → Evaluate
-```
+An eventual agent could:
 
-It must continue to separate EC2 inventory, SSM connectivity, serving-runtime evidence, version classification, deployment status, and demonstrated exploitability.
+1. Interpret a security advisory.
+2. Identify an authorized investigation scope.
+3. Select suitable deterministic tools.
+4. Execute only permitted checks.
+5. Review evidence and report unknowns.
+6. Propose next steps.
+7. Request authorization before remediation or destructive action.
+8. Use independent evaluation rather than trusting its own conclusion.
 
-### 8.1 AWS prerequisites, method selection and account setup
+This is future architecture, not an implemented autonomous workflow. Any agent
+must distinguish inventory, desired configuration, running image, serving
+runtime, and demonstrated exposure.
 
-Before selecting a method, confirm:
+## 13. Future security integrations
 
-- You are authorized to create and remove disposable infrastructure in the approved AWS account.
-- The AWS CLI is installed and the `vul-harness-lab-nov26` profile is present.
-- Terraform 1.17.1 and AWS provider 6.72.0 are the validated live toolchain if using the Terraform method; the configuration retains its Terraform `>= 1.5.0` and AWS provider `>= 6.43.0, < 7.0.0` constraints, but an older local Terraform/provider cache is not considered validated. Provider initialization must succeed before planning or applying.
+Future adapters could enrich an investigation with:
 
-If the account contains a protected reference instance, set its account-specific
-ID only in the local environment as
-`VULHARNESS_PROTECTED_INSTANCE_ID=<instance-id>`. Never commit or paste that
-value into public documentation. If it is unset, the evaluator reports the
-resource-independence check as `SKIP` with
-`skip_classification=configuration_missing`.
-- The profile has the least-privilege permissions required for the deployment-owned EC2, VPC, IAM, and SSM resources.
-- The intended region is `us-east-1`.
-- You have an owner and expiration value for the deployment.
-- You understand that this stage creates public-subnet infrastructure with zero inbound security-group rules.
+- CNAPP or CSPM findings
+- SIEM and logging platforms
+- Cloud-provider inventory APIs
+- Notifications such as Slack
 
-Set the approved profile and region explicitly in the terminal used for the workshop:
+These are integration possibilities, not currently implemented features. An
+external finding must not automatically be treated as verified runtime
+exposure, and an adapter must preserve source, timestamp, scope, freshness, and
+coverage.
 
-```bash
-export AWS_PROFILE=vul-harness-lab-nov26
-export AWS_REGION=us-east-1
-aws configure list --profile "$AWS_PROFILE"
-aws sts get-caller-identity --profile "$AWS_PROFILE" --region "$AWS_REGION"
-```
+## 14. Contribute the next scenario
 
-Do not place access keys, session tokens, or private credentials in the repository or command output.
+VulHarness welcomes additional vulnerability investigation scenarios. A useful
+contribution may be manual-only, local-only, or smaller than PHP2Shell. Start
+with the [scenario development guide](../../../docs/scenario-development-guide.md)
+and [CONTRIBUTING.md](../../../CONTRIBUTING.md).
 
-Choose exactly one method for a deployment cycle. Do not combine methods or reuse resources, state, stacks, VPCs, subnets, IAM roles, security groups, or instances across methods. `t4g.small` may incur charges; confirm the account's current Free Tier or credit eligibility before deploying.
+A scenario should document its authorization boundary, provenance,
+preconditions, evidence requirements, expected outcomes, limitations,
+failure/recovery paths, and cleanup. Keep scenario-specific content under
+scenarios/; keep reusable workflows, checks, skills, and integrations separate.
+Do not distribute intentionally vulnerable applications, credentials, real
+target data, or unnecessary exploit tooling.
 
-All three methods select Amazon Linux 2023 ARM64, create two separate `t4g.small` instances with encrypted 20-GiB gp3 roots, require IMDSv2, create a dedicated SSM instance profile, and use zero inbound security-group rules. The method tag keeps their ownership independent.
+# Appendix
 
-Run a new AWS CLI deployment from the repository root. It generates a unique deployment ID and a default 24-hour expiration:
-
-```bash
-./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh deploy
-```
-
-Record the printed deployment ID and export it for later commands:
-
-```bash
-export VULHARNESS_DEPLOYMENT_ID=vh-<deployment-id>
-./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh status
-./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh cleanup --dry-run
-```
-
-To resume an interrupted deployment, set the same `VULHARNESS_DEPLOYMENT_ID` and run `deploy` again. The CLI discovers exact deployment-owned resources, preserves the existing expiration timestamp, validates resources before reuse, and creates only missing resources. It does not repair conflicting, ambiguous, orphaned, or incorrectly tagged resources. If Lab C exists but Lab D does not, it validates Lab C and creates only Lab D.
-
-```bash
-export VULHARNESS_DEPLOYMENT_ID=vh-<existing-deployment-id>
-./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh deploy
-```
-
-Confirmed cleanup requires typing `DELETE <deployment-id>` after the exact resource list is shown:
-
-```bash
-./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh cleanup
-```
-
-Cleanup is manual, scoped to the deployment ID, and safe to retry. EC2 instances, EBS volumes, public IPv4 addresses, and other resources can incur AWS charges while they remain provisioned. Do not leave a workshop deployment running after the exercise.
-
-CloudFormation and Terraform alternatives:
-
-```bash
-./scenarios/php2shell/labs/aws/deployment/cloudformation/cf-lab.sh deploy
-./scenarios/php2shell/labs/aws/deployment/terraform/tf-lab.sh deploy
-```
-
-Use the corresponding `status`, `cleanup --dry-run`, and confirmed `cleanup` commands from the linked technical README. Terraform state must be retained until independent post-cleanup AWS verification succeeds.
-
-### 8.2 Part 1 live-validation result
-
-The AWS CLI Part 1 live validation successfully deployed and validated both Lab C and Lab D. The deployment reached infrastructure `Status: HEALTHY`; the observed infrastructure state included:
-
-- Two separate EC2 instances, correctly identified as Lab C and Lab D.
-- EC2 instances running with the approved Amazon Linux 2023 ARM64 configuration.
-- `t4g.small` instance sizing.
-- Encrypted 20-GiB gp3 root volumes.
-- IMDSv2 required.
-- Zero inbound security-group rules.
-- Both instances registered `Online` in AWS Systems Manager.
-
-This result establishes infrastructure health and SSM connectivity only. It does not establish that Docker, PHP, Compose, the serving endpoint, or the PHP runtime is ready.
-
-CloudFormation has also completed two live, independently evaluated Lab C/D lifecycles, including Docker/Compose bootstrap, PHP baseline/remediation/reset, GuardDuty-aware cleanup, and post-cleanup absence checks. Terraform has completed two independent live lifecycles with the same runtime, remediation, reset, repeatability, GuardDuty-aware cleanup, and post-cleanup absence checks. The Terraform wrapper explicitly selects the AWS profile and enables shared-config loading (`AWS_SDK_LOAD_CONFIG=1`) so provider STS initialization matches AWS CLI profile resolution.
-
-Two live Terraform lifecycles used separate retained state until independent absence verification passed. One recovered from a transient SSM localhost readiness failure, and the other recovered from initial package/plugin readiness races by rerunning the same bounded bootstrap commands.
-
-### 8.3 EC2 provisioning and SSM access
-
-Each method provisions two separate EC2 instances: one for Lab C and one for Lab D. The independent evaluator verifies instance identity, region, tags, IAM instance profile, encrypted root volumes, IMDSv2, zero inbound rules, and SSM registration.
-
-It does not verify Docker readiness, repository-layout provenance, PHP, or the serving runtime. Those checks belong to later stages.
-
-The PHP inspection endpoint must remain bound to `127.0.0.1:8080` on each instance. It must not be exposed through a public IP, load balancer, public security-group ingress rule, or unauthenticated tunnel. Inspection uses authenticated AWS Systems Manager access.
-
-### 8.4 Shared SSM Docker and Compose bootstrap
-
-After infrastructure validation, use the same SSM-only bootstrap for whichever method you selected:
-
-```bash
-python3 scenarios/php2shell/labs/aws/deployment/shared/ssm_runtime.py bootstrap \
-  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
-  --method <aws-cli|cloudformation|terraform> \
-  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --lab-id lab-c
-
-python3 scenarios/php2shell/labs/aws/deployment/shared/ssm_runtime.py bootstrap \
-  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
-  --method <aws-cli|cloudformation|terraform> \
-  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --lab-id lab-d
-```
-
-The workflow transfers the approved assets with integrity checks, installs Docker and Compose on Amazon Linux 2023, validates the Compose model, and starts the selected lab. It does not use SSH or open inbound access.
-
-### 8.5 Starting Labs C and D
-
-The deployment artifacts are:
-
-- [Lab C Compose scaffold](../labs/aws/lab-c/compose.lab-c.yaml)
-- [Lab D base scaffold](../labs/aws/lab-d/compose.lab-d.yaml)
-- [Lab D update override](../labs/aws/lab-d/compose.lab-d.update.yaml)
-
-The future deployment must preserve the repository's `scenarios/php2shell/labs/` layout on each instance because the Compose files reuse shared application and Nginx files through relative, read-only mounts.
-
-The shared bootstrap copies the required files to EC2 and starts the selected workload. Lab C uses PHP 8.4.27. Lab D starts with PHP 8.4.26 and is the remediation target.
-
-### 8.6 Discovering and evaluating the EC2 instances
-
-The independent evaluator requires an explicit method, deployment ID, profile, and region. It queries only exact VulHarness project, scenario, deployment, and method tags; it does not scan every EC2 instance in an account.
-
-Run the initial infrastructure, SSM, Docker, Compose, and PHP evaluation:
-
-```bash
-python3 scenarios/php2shell/evals/aws-lifecycle/aws_evaluate.py \
-  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
-  --method <aws-cli|cloudformation|terraform> \
-  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --include-ssm
-```
-
-The evaluator writes machine-readable results and evidence locally under the ignored `docs/evidence/aws/<method>/<deployment-id>/` path. Raw AWS output can contain live account and resource identifiers; do not commit or upload it. Duplicate matches, stopped instances, inaccessible regions, and authorization failures remain failures or insufficient evidence; they are never inferred to be healthy. Use `--phase remediated` after the Lab D update and `--phase reset` after resetting Lab D.
-
-### 8.7 Inspecting running PHP versions
-
-The evaluator separately determines whether each selected instance is an authorized, reachable SSM managed node. A bounded, read-only SSM operation requests raw runtime facts from the loopback-only PHP endpoint on that instance.
-
-A running EC2 instance does not establish that PHP is installed, that the Compose project is running, or that the expected PHP-FPM process serves the application. The response must retain its source, instance identity, region, SAPI, observation timestamp, and collection limitations.
-
-### 8.8 Deterministic cloud assessment
-
-The existing [deterministic checker](../checks/local-http-version/README.md) validates normalized raw runtime evidence and owns the PHP version-comparison semantics. The AWS evaluator collects equivalent evidence through SSM and passes it to shared assessment logic rather than duplicating CVE thresholds.
-
-No `lab-c` or `lab-d` local URL target is required. Do not extend the workstation-local URL registry with URLs that falsely represent remote EC2 evidence.
-
-### 8.9 Cloud inventory in Hello World 2.0
-
-The future dashboard should retain one data-driven inventory table. AWS rows should add environment, instance ID, region, discovery status, connectivity status, evidence source, observed PHP version, per-CVE classifications, timestamp, and limitations.
-
-It must not use four hardcoded summary cards or accept arbitrary URLs, instance IDs, regions, commands, or account-wide scans from browser requests. Current Hello World 2.0 displays local configured targets only.
-
-### 8.10 Applying the Lab D update
-
-Inspect the initial Lab D state before remediation. Then apply only the Lab D update through SSM:
-
-```bash
-python3 scenarios/php2shell/labs/aws/deployment/shared/ssm_runtime.py remediate \
-  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
-  --method <aws-cli|cloudformation|terraform> \
-  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --lab-id lab-d
-```
-
-Selecting or inspecting the update override does not count as deployment. The running container and HTTP-serving runtime must be observed separately. Lab C remains the independent PHP 8.4.27 reference.
-
-### 8.11 Independent cloud verification
-
-Independent verification should repeat SSM connectivity and loopback HTTP collection after deployment, corroborate the running container image where practical, and compare the fresh evidence with the expected upstream threshold.
-
-After remediation, collect the after-state evidence explicitly:
-
-```bash
-python3 scenarios/php2shell/evals/aws-lifecycle/aws_evaluate.py \
-  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
-  --method <aws-cli|cloudformation|terraform> \
-  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --include-ssm --phase remediated
-```
-
-Reset Lab D through the same SSM workflow, then collect separate reset evidence:
-
-```bash
-python3 scenarios/php2shell/labs/aws/deployment/shared/ssm_runtime.py reset \
-  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
-  --method <aws-cli|cloudformation|terraform> \
-  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --lab-id lab-d
-
-python3 scenarios/php2shell/evals/aws-lifecycle/aws_evaluate.py \
-  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
-  --method <aws-cli|cloudformation|terraform> \
-  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --include-ssm --phase reset
-```
-
-Retain the reset evidence separately from the initial and remediated artifacts.
-
-Stopped, unreachable, malformed, or uninspectable instances must produce unknown or `inconclusive` results. They must never be inferred to be fixed.
-
-### 8.12 Cloud evaluation
-
-The cumulative evaluator records infrastructure, runtime, PHP, remediation, recovery, and cleanup evidence as separate results. It uses shared deterministic assessment results while keeping discovery and transport failures visible.
-
-The local Lab B lifecycle evaluation is not evidence that the EC2 exercise works. AWS PHP evidence must come from the selected EC2 instances through SSM.
-
-The evaluator returns a nonzero status when a collected check fails or an AWS inspection error occurs. A skipped lifecycle artifact with `skip_classification=coverage_gap` is not a pass; repeat the required bootstrap/remediation/reset or lifecycle cycle and preserve the evidence directory. GuardDuty checks marked `conditional_guardduty_evidence` remain explicit conditional coverage, not successful cleanup.
-
-### 8.13 AWS reset and cleanup
-
-The CLI deployment includes scoped infrastructure cleanup for its own deployment ID. Later operational stages must extend cleanup to Compose projects, logs, SSM associations, and any additional resources they create.
-
-The CLI records ownership through exact deployment, lab, owner, expiration, and management tags. Its dry-run lists targets, and confirmed cleanup requires an explicit deployment-specific confirmation. Broad account cleanup commands will not be used.
-
-AWS-managed services can create unrelated dependencies inside a new VPC. If cleanup reports an untagged GuardDuty endpoint, do not adopt it as a normal lab resource. The technical wrappers require explicit opt-in and release only a verified endpoint/ENI/SG inside the exact lab VPC after unrelated-consumer checks; otherwise cleanup remains `BLOCKED_BY_EXTERNAL_DEPENDENCY`.
-
-AWS limitations remain explicit:
-
-- Compose scaffolds are not deployed-environment evidence.
-- EC2 running state is not PHP runtime evidence.
-- Version classification is not proof of exploitability or non-exploitability.
-- Distribution backports and applicable advisory conditions require separate evidence.
-- AWS inventory is exact-tag scoped; SSM runtime transport is authenticated and bounded. The dashboard remains a future presentation layer.
-
-### 8.14 AWS CLI troubleshooting
-
-- **Missing default route:** A partially created route table may contain only its local route. Re-run `deploy` with the same deployment ID. The CLI uses `create-route` when the `0.0.0.0/0` route is absent and refuses to replace an unrelated route.
-- **Malformed EC2 `TagSpecifications`:** `run-instances` requires JSON tag objects with `Key` and `Value` fields. Use the corrected repository script and resume with the same deployment ID; do not manually adopt or retag unrelated instances.
-- **VPC CIDR conflict:** The requested CIDR is already in use. Choose an unused `VULHARNESS_VPC_CIDR` for a new deployment ID, or resume the original deployment if its tagged VPC is discoverable. Do not reuse another project’s VPC.
-- **Partial deployment:** Run `status` and then `cleanup --dry-run`. A partial or unhealthy deployment is inspectable but not healthy; `status` returns exit code `2`, while an inspectable dry-run returns `0`. Resume with the same deployment ID only after the exact target list and ownership tags are understood.
-- **Missing deployment ID:** `deploy` generates one automatically. `status`, `cleanup --dry-run`, confirmed `cleanup`, and resume operations require `--deployment-id` or `VULHARNESS_DEPLOYMENT_ID`.
-
-## Part H — Future scenarios and agent orchestration
-
-> **Planned — No Agent Workflow or Reusable Skill Is Implemented**
-
-A later workshop stage may use Codex, Claude Code, or another coding agent to
-assist with an authorized investigation, identify PHP runtimes, collect
-evidence, recommend remediation, and recheck after a developer reports that
-deployment is complete. This is future work; no generic scenario registry or
-LLM integration exists today.
-
-The intended progression is:
-
-1. Give the agent a bounded, authorized investigation scope.
-2. Require it to distinguish inventory, desired configuration, running image, serving runtime, and demonstrated exposure.
-3. Preserve evidence sources and timestamps instead of accepting the agent's conclusion alone.
-4. Keep remediation execution subject to explicit approval and environment ownership.
-5. Independently run the deterministic checker and applicable evaluation.
-6. Compare agent findings with independently verified outcomes.
-
-Agent integration must remain optional. Manual investigation and deterministic automation stay first-class, reusable skills remain separate from Scenario 1, and provider-specific adapters must not change the shared evidence or assessment semantics.
-
-No agent command, reusable skill, or automatic remediation step is required by
-this guide. The current PHP2Shell CLI is scenario-specific orchestration, not
-the proposed future chief-of-staff agent.
-
-A future chief-of-staff workflow could look like this:
-
-```text
-Security engineer: “Are we impacted by PHP2Shell?”
-        ↓
-Interpret request → discover an available scenario → identify authorized scope
-        ↓
-Invoke permitted deterministic operations → read evidence and independent evaluations
-        ↓
-Report assessed assets, potential impact, and unknowns
-        ↓
-Request explicit authorization before remediation or destructive action
-```
-
-The agent would coordinate approved components, not replace the security
-engineer's expected outcomes, authorization decisions, or independent
-verification.
-
-Contributors designing another scenario should use the [scenario development
-guide](../../../docs/scenario-development-guide.md), not assume that this
-PHP2Shell-specific command is a generic platform interface.
-
-## 10. Reset and cleanup
-
-Why this matters: a reproducible lab has an explicit return path to its initial state and a cleanup boundary that does not affect unrelated projects.
-
-Restore Lab B to PHP 8.4.26:
-
-```sh
-docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.update.yaml down
-docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml up -d
-```
-
-Confirm the reset:
-
-```sh
-python3 scenarios/php2shell/evals/remediation-lifecycle/evaluate.py --state before
-```
-
-You can now repeat the remediation and verification steps in Section 5.
-
-To stop and remove Lab B without affecting Lab A:
-
-```sh
-docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml down
-```
-
-When you are finished with Lab A as well:
-
-```sh
-docker compose -f scenarios/php2shell/labs/local/lab-a/compose.lab-a.yaml down
-```
-
-Stop the dashboard by returning to its terminal and pressing `Ctrl+C`.
-
-## 11. Troubleshooting and recovery
+## Troubleshooting and recovery
 
 ### Wrong working directory
 
-Every command in this guide expects the repository root. Check:
+Every command expects the repository root:
 
-```sh
+~~~bash
 ls README.md scenarios/php2shell
-```
+~~~
 
 ### Docker daemon unavailable
 
-```sh
+~~~bash
 docker info
-```
+~~~
 
-Start the authorized Docker service if this cannot connect. The evaluator reports a failed read-only inspection rather than changing Docker state.
+Start the authorized Docker service if it cannot connect. The evaluator reports
+failed read-only inspection rather than changing Docker state.
 
 ### Port already in use
 
 Inspect current bindings without modifying them:
 
-```sh
+~~~bash
 docker ps --format 'table {{.Names}}\t{{.Ports}}'
-```
+~~~
 
-Lab A requires 8080, the dashboard requires 8081, and Lab B requires 8082. Stop only the process or project you own; do not clean up unrelated containers.
+Lab A requires 8080, the dashboard requires 8081, and Lab B requires 8082.
+Stop only the process or project you own.
 
 ### Dashboard already running
 
-Use the existing [http://127.0.0.1:8081](http://127.0.0.1:8081) window. If you own its terminal, press `Ctrl+C` before starting another dashboard process.
+Use the existing [http://127.0.0.1:8081](http://127.0.0.1:8081) window. If you
+own its terminal, press Ctrl+C before starting another process.
 
 ### PHP runtime does not match the expected state
 
-First collect fresh HTTP evidence:
+Collect fresh evidence:
 
-```sh
+~~~bash
 python3 scenarios/php2shell/checks/local-http-version/cli.py --target lab-b
-```
-
-Then inspect the desired model:
-
-```sh
 docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.update.yaml config --images
-```
+~~~
 
-If the desired image is fixed but HTTP still reports 8.4.26, the runtime has not yet been recreated. Return to **Apply the Lab B update** in Part E. If you intended the before-state, perform the reset in Section 10.
+If the desired image is fixed but HTTP still reports 8.4.26, the runtime has
+not been recreated. Return to [Apply the approved Lab B update](#37-apply-the-approved-lab-b-update). If you intended the before-state, use [Reset Lab B](#310-reset-lab-b-when-appropriate).
 
-### Container starts but the HTTP endpoint is unavailable
+### Container starts but HTTP is unavailable
 
-Inspect Lab B status and recent logs:
+Inspect only Lab B:
 
-```sh
+~~~bash
 docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml ps
 docker compose -f scenarios/php2shell/labs/local/lab-b/compose.lab-b.yaml logs --tail=50 web php-fpm
-```
-
-Probe only the authorized local evidence endpoint:
-
-```sh
 curl --fail --show-error --max-time 3 'http://127.0.0.1:8082/?inspect=1&format=json'
-```
+~~~
 
-An unavailable or malformed response must remain FAIL/inconclusive. Do not convert missing evidence into a successful evaluation.
+An unavailable or malformed response remains FAIL or inconclusive. Do not
+convert missing evidence into a successful evaluation.
 
-## 12. What the workshop establishes
+### AWS deployment recovery
 
-- Configuration is intent.
-- Runtime observation is evidence.
-- Deployment is not complete until independently verified.
-- Deterministic evaluation provides repeatable PASS/FAIL criteria.
-- A fixed-version result is not proof of non-exploitability or complete remediation.
+For a partial deployment, run status, then cleanup --dry-run and review
+only the exact deployment-owned targets. Resume with the same deployment ID
+only after ownership tags and the recovery state are understood. For VPC CIDR
+conflicts, select an unused CIDR for a new deployment ID rather than reusing
+another project's VPC. See the [AWS CLI README](../labs/aws/deployment/cli/README.md)
+and [AWS lab guide](../labs/aws/README.md) for bounded retries, provider
+constraints, and GuardDuty dependency handling.
 
-For deeper evidence collection, continue with the [manual investigation walkthrough](local/manual-investigation/README.md). For checker details and target configuration, see the [local HTTP version-check documentation](../checks/local-http-version/README.md). Environment-specific implementation details remain in the Lab A/B/C/D READMEs, not separate participant journeys.
+## Technical references
+
+- [PHP2Shell reference register](../references.md)
+- [Scenario overview](../README.md)
+- [Architecture](../../../docs/architecture.md)
+- [Scenario development guide](../../../docs/scenario-development-guide.md)
+- [AWS lab plan](../labs/aws/README.md)
+- [AWS lifecycle evaluator](../evals/aws-lifecycle/README.md)
+- [Local manual investigation reference](local/manual-investigation/README.md)
+
+The technical READMEs contain implementation-specific deployment and recovery
+detail. Historical live AWS validation, when documented there, is distinct
+from offline tests and mock coverage that can run without AWS.
+
+## Reset and cleanup reference
+
+For local work, return Lab B to its before-state with the reset sequence in
+[Section 3.10](#310-reset-lab-b-when-appropriate) or
+[Section 6.4](#64-reset-and-cleanup-checkpoint). Keep Labs A and B running if
+another section still needs them. When finished, use the named project cleanup
+commands in [Section 3.11](#311-local-cleanup-checkpoint) or the harness cleanup
+sequence in [Section 9.1](#91-local-lifecycle).
+
+For AWS work, reset only Lab D with the shared SSM command, evaluate the
+`reset` phase, run the selected method's `cleanup --dry-run`, review exact
+ownership, perform interactive cleanup only when authorized, and run
+`--expect-absent`. Keep the deployment ID and Terraform state until absence is
+verified. Never use broad account cleanup or infer absence from a failed API
+call.
+
+## What this lab establishes
+
+- Investigation starts with authorization, scope, and observable evidence.
+- Configuration is intent; runtime observation is evidence.
+- Deterministic automation makes a documented investigation repeatable.
+- Independent evaluation separates expected outcomes from tool or agent claims.
+- Deployment is not complete until the relevant runtime is independently
+  verified and cleanup is scoped.
+- A fixed-version result is not proof of non-exploitability or complete
+  remediation.
+
+For deeper local evidence requirements, see the [manual investigation
+reference](local/manual-investigation/README.md). For checker details and
+target configuration, see the [local HTTP version-check documentation](../checks/local-http-version/README.md). Environment-specific implementation details remain in the Lab A/B/C/D READMEs.

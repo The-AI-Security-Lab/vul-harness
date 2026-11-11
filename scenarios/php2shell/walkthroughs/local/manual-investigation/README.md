@@ -144,7 +144,11 @@ Expected outcome: the participant produces a reviewable result for each CVE with
 
 Keep evidence minimal, relevant, and redacted. Record source, provenance, timestamps, versions, package identity, configuration assumptions, SAPI, scope, and environmental limitations. Treat missing evidence as missing evidence; do not silently convert it into a negative finding or a positive claim.
 
-The Stage 1 golden evaluations remain documented expectations that a reviewer can inspect manually. Stage 2 adds a separate [deterministic HTTP version check](../../../checks/local-http-version/README.md) and a narrowly scoped [Lab B remediation lifecycle evaluation](../../../evals/remediation-lifecycle/evaluate.py). The canonical [Scenario 1 participant lab guide](../../participant-lab-guide.md) combines these components into a progressive exercise. No generalized evaluation runner exists.
+The documented golden evaluations remain expectations that a reviewer can
+inspect manually. The deterministic [HTTP version check](../../../checks/local-http-version/README.md)
+and narrowly scoped [Lab B remediation lifecycle evaluation](../../../evals/remediation-lifecycle/evaluate.py)
+are combined with these components by the canonical [participant lab guide](../../participant-lab-guide.md).
+No generalized evaluation runner exists.
 
 ## Cleanup
 

@@ -32,7 +32,8 @@ Each lab is intended for a separate EC2 instance. Both may bind Nginx to `127.0.
 ## Approved Stage 2B architecture
 
 - AWS region: `us-east-1`
-- Default development profile: `vul-harness-lab-nov26`
+- AWS CLI profile: supplied explicitly by the participant; never commit local
+  profile names or credentials
 - Two separate `t4g.small` ARM64 EC2 instances
 - Amazon Linux 2023 ARM64, selected from the AWS-published AMIs in the region
 - Dedicated VPC and public subnet with an Internet Gateway and public IPv4 for outbound access

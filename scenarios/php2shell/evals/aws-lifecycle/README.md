@@ -5,8 +5,12 @@
 Run infrastructure evaluation:
 
 ```bash
+export AWS_PROFILE="REPLACE_WITH_YOUR_PROFILE"
+export AWS_REGION="us-east-1"
+export VULHARNESS_DEPLOYMENT_ID="REPLACE_WITH_DEPLOYMENT_ID"
 python3 scenarios/php2shell/evals/aws-lifecycle/aws_evaluate.py \
-  --method aws-cli --deployment-id <deployment-id>
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method aws-cli --deployment-id "$VULHARNESS_DEPLOYMENT_ID"
 ```
 
 If the account contains a protected reference instance, set its account-specific
@@ -18,7 +22,9 @@ Include SSM, Docker, Compose, and loopback runtime evidence:
 
 ```bash
 python3 scenarios/php2shell/evals/aws-lifecycle/aws_evaluate.py \
-  --method aws-cli --deployment-id <deployment-id> --include-ssm --phase initial
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method aws-cli --deployment-id "$VULHARNESS_DEPLOYMENT_ID" \
+  --include-ssm --phase initial
 ```
 
 Use `--phase remediated` after the Lab D update and `--phase reset` after restoring the Lab D baseline. The runtime pass includes actual loopback HTTP JSON, SAPI, Compose status, and image evidence; SSM Online alone is never treated as PHP readiness.
@@ -39,15 +45,17 @@ Pass a controlled lifecycle manifest to grade recovery and idempotency evidence:
 
 ```bash
 python3 scenarios/php2shell/evals/aws-lifecycle/aws_evaluate.py \
-  --method aws-cli --deployment-id <deployment-id> \
-  --lifecycle-evidence docs/evidence/aws/aws-cli/<deployment-id>/lifecycle.json
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method aws-cli --deployment-id "$VULHARNESS_DEPLOYMENT_ID" \
+  --lifecycle-evidence "docs/evidence/aws/aws-cli/$VULHARNESS_DEPLOYMENT_ID/lifecycle.json"
 ```
 
 Run independent post-cleanup absence verification separately from the healthy-state evaluator:
 
 ```bash
 python3 scenarios/php2shell/evals/aws-lifecycle/aws_evaluate.py \
-  --method aws-cli --deployment-id <deployment-id> --expect-absent
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method aws-cli --deployment-id "$VULHARNESS_DEPLOYMENT_ID" --expect-absent
 ```
 
 `--expect-absent` passes only when exact deployment-tagged EC2, VPC, networking, volume, network-interface, role, and instance-profile inventories are empty. If an unowned VPC endpoint or other external dependency is present in the deployment VPC, the result remains `FAIL` with `failure_classification=BLOCKED_BY_EXTERNAL_DEPENDENCY`, and the command exits 2. It does not delete residual or unrelated resources. Genuine residual resources remain classified as `RESIDUAL_RESOURCES`.

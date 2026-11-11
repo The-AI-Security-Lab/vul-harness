@@ -1,6 +1,6 @@
 # PHP2Shell Lab B — Local Docker
 
-> **Technical environment reference.** Follow the canonical [Scenario 1 participant guide](../../../walkthroughs/participant-lab-guide.md) for the progressive workshop journey, exact lifecycle commands, expected results, reset, cleanup, and troubleshooting.
+> **Technical environment reference.** Follow the canonical [participant lab guide](../../../walkthroughs/participant-lab-guide.md) for the progressive journey, exact lifecycle commands, expected results, reset, cleanup, and troubleshooting.
 
 Lab B is a controlled companion to [Lab A](../lab-a/README.md). It provides an independent Nginx and PHP-FPM environment for comparing desired Compose configuration, running container identity, and the PHP runtime actually serving HTTP requests.
 

@@ -6,13 +6,13 @@ Part 1 live validation completed successfully for both Lab C and Lab D. The vali
 
 ## Prerequisites and AWS context
 
-The operator must be authorized to create and remove disposable resources in the approved AWS account. The AWS CLI must be installed and the `vul-harness-lab-nov26` profile must be configured with the required least-privilege EC2, VPC, IAM, and SSM permissions.
+The operator must be authorized to create and remove disposable resources in the approved AWS account. The AWS CLI must be installed and a local profile supplied by the operator must be configured with the required least-privilege EC2, VPC, IAM, and SSM permissions.
 
 The default profile and region are:
 
 ```bash
-export AWS_PROFILE=vul-harness-lab-nov26
-export AWS_REGION=us-east-1
+export AWS_PROFILE="REPLACE_WITH_YOUR_PROFILE"
+export AWS_REGION="us-east-1"
 aws configure list --profile "$AWS_PROFILE"
 aws sts get-caller-identity --profile "$AWS_PROFILE" --region "$AWS_REGION"
 ```
@@ -25,10 +25,10 @@ Run from the repository root:
 ./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh deploy
 ```
 
-The script uses `vul-harness-lab-nov26` and `us-east-1` by default. Override them with flags or environment variables:
+The script accepts the selected profile and region through flags or environment variables:
 
 ```bash
-AWS_PROFILE=<approved-profile> AWS_REGION=<approved-region> \
+AWS_PROFILE="REPLACE_WITH_YOUR_PROFILE" AWS_REGION="REPLACE_WITH_YOUR_REGION" \
   ./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh deploy
 ```
 
@@ -41,7 +41,7 @@ Deployment generates a unique ID unless `VULHARNESS_DEPLOYMENT_ID` is supplied. 
 For an interrupted deployment, export the original ID and run `deploy` again:
 
 ```bash
-export VULHARNESS_DEPLOYMENT_ID=vh-<existing-deployment-id>
+export VULHARNESS_DEPLOYMENT_ID="REPLACE_WITH_EXISTING_DEPLOYMENT_ID"
 ./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh deploy
 ```
 
@@ -50,14 +50,18 @@ The same ID is safely resumable when existing resources have the expected exact 
 ## Lifecycle commands
 
 ```bash
-VULHARNESS_DEPLOYMENT_ID=<deployment-id> \
-  ./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh status
+export VULHARNESS_DEPLOYMENT_ID="REPLACE_WITH_DEPLOYMENT_ID"
+./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" status
 
-VULHARNESS_DEPLOYMENT_ID=<deployment-id> \
-  ./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh cleanup --dry-run
+./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" cleanup --dry-run
 
-VULHARNESS_DEPLOYMENT_ID=<deployment-id> \
-  ./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh cleanup
+./scenarios/php2shell/labs/aws/deployment/cli/aws-lab.sh \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" cleanup
 ```
 
 Confirmed cleanup requires an interactive `DELETE <deployment-id>` confirmation. If the exact VPC contains an isolated GuardDuty-managed endpoint, add `--allow-guardduty-cleanup`; the script validates scope and releases only that endpoint, its dependent ENI, and its unreferenced GuardDuty security group. It then terminates the tagged instances and removes only deployment-owned volumes, route table, Internet Gateway, security group, subnet, VPC, instance profile, and IAM role. Failed operations are reported and the command can be retried.

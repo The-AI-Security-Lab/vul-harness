@@ -30,16 +30,22 @@ not remove `.terraform.lock.hcl`, deployment state, or evidence. A successful
 ## Commands
 
 ```bash
+export AWS_PROFILE="REPLACE_WITH_YOUR_PROFILE"
+export AWS_REGION="us-east-1"
+export VULHARNESS_DEPLOYMENT_ID="REPLACE_WITH_DEPLOYMENT_ID"
 ./scenarios/php2shell/labs/aws/deployment/terraform/tf-lab.sh deploy
 
-VULHARNESS_DEPLOYMENT_ID=<deployment-id> \
-  ./scenarios/php2shell/labs/aws/deployment/terraform/tf-lab.sh status
+./scenarios/php2shell/labs/aws/deployment/terraform/tf-lab.sh \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" status
 
-VULHARNESS_DEPLOYMENT_ID=<deployment-id> \
-  ./scenarios/php2shell/labs/aws/deployment/terraform/tf-lab.sh cleanup --dry-run
+./scenarios/php2shell/labs/aws/deployment/terraform/tf-lab.sh \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" cleanup --dry-run
 
-VULHARNESS_DEPLOYMENT_ID=<deployment-id> \
-  ./scenarios/php2shell/labs/aws/deployment/terraform/tf-lab.sh cleanup
+./scenarios/php2shell/labs/aws/deployment/terraform/tf-lab.sh \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --deployment-id "$VULHARNESS_DEPLOYMENT_ID" cleanup
 ```
 
 Confirmed cleanup requires typing `DELETE <deployment-id>` and passing `--allow-guardduty-cleanup` when a verified GuardDuty endpoint is present. The wrapper validates the exact VPC and rejects ambiguous or unrelated consumers; the provider then performs its native GuardDuty cleanup during destroy. Terraform destroy output is not independent cleanup verification; run the evaluator after destroy and retain state until resource absence is confirmed.

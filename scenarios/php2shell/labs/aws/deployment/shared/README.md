@@ -7,14 +7,24 @@ It never uses SSH, opens inbound security-group rules, stores credentials on the
 Examples:
 
 ```bash
+export AWS_PROFILE="REPLACE_WITH_YOUR_PROFILE"
+export AWS_REGION="us-east-1"
+export VULHARNESS_METHOD="aws-cli"
+export VULHARNESS_DEPLOYMENT_ID="REPLACE_WITH_DEPLOYMENT_ID"
 python3 scenarios/php2shell/labs/aws/deployment/shared/ssm_runtime.py bootstrap \
-  --method aws-cli --deployment-id <deployment-id> --lab-id lab-c
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method "$VULHARNESS_METHOD" --deployment-id "$VULHARNESS_DEPLOYMENT_ID" \
+  --lab-id lab-c
 
 python3 scenarios/php2shell/labs/aws/deployment/shared/ssm_runtime.py bootstrap \
-  --method aws-cli --deployment-id <deployment-id> --lab-id lab-d
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method "$VULHARNESS_METHOD" --deployment-id "$VULHARNESS_DEPLOYMENT_ID" \
+  --lab-id lab-d
 
 python3 scenarios/php2shell/labs/aws/deployment/shared/ssm_runtime.py remediate \
-  --method aws-cli --deployment-id <deployment-id> --lab-id lab-d
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --method "$VULHARNESS_METHOD" --deployment-id "$VULHARNESS_DEPLOYMENT_ID" \
+  --lab-id lab-d
 ```
 
 The evaluator remains separate from this workflow and independently queries AWS, SSM, Docker state, and the loopback runtime endpoint.

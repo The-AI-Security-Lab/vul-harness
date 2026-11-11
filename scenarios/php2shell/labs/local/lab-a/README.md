@@ -1,6 +1,6 @@
 # PHP2Shell Lab A — Local Docker
 
-> **Technical environment reference.** Follow the canonical [Scenario 1 participant guide](../../../walkthroughs/participant-lab-guide.md) for the progressive workshop journey, expected results, reset, cleanup, and troubleshooting.
+> **Technical environment reference.** Follow the canonical [participant lab guide](../../../walkthroughs/participant-lab-guide.md) for the progressive journey, expected results, reset, cleanup, and troubleshooting.
 
 ## Purpose
 
@@ -15,7 +15,7 @@ The lab does not contain an intentionally vulnerable PHP release, send exploit p
 **VulHarness — An open-source project by AI Security Lab**
 
 - [AI Security Lab](https://www.aisecuritylab.com)
-- [VulHarness GitHub](https://github.com/The-AI-Security-Lab/vul-harness) — intended public repository location; the repository has not yet been published.
+- [VulHarness GitHub](https://github.com/The-AI-Security-Lab/vul-harness) — project repository.
 
 ## Prerequisites
 

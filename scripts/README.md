@@ -1,7 +1,7 @@
 # PHP2Shell orchestration command
 
 [`vulharness-php2shell.py`](vulharness-php2shell.py) is the participant-facing
-command center for Scenario 1. It coordinates the existing Compose projects,
+command center for the PHP2Shell scenario. It coordinates the existing Compose projects,
 AWS deployment wrappers, SSM runtime workflow, checker, and evaluators. It does
 not duplicate PHP advisory logic, AWS ownership filters, or runtime collection.
 
