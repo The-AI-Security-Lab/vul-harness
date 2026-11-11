@@ -1,0 +1,30 @@
+id: php2shell
+title: PHP2Shell
+description: >-
+  Reference vulnerability-assessment scenario for investigating PHP runtime
+  presence, provenance, configuration, and applicability of two upstream PHP
+  security advisories in an authorized environment. VulHarness does not
+  distribute an intentionally vulnerable application.
+references:
+  - path: references.md
+    status: verified-upstream
+    description: Two upstream advisories are verified; distribution backport status remains vendor-specific.
+vulnerabilities:
+  - id: CVE-2026-109618
+    title: RCE via OOM corruption
+    advisory: https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w
+  - id: CVE-2026-109619
+    title: RCE via stale global state
+    advisory: https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp
+available_walkthroughs:
+  - id: local-manual-investigation
+    path: walkthroughs/local/manual-investigation/README.md
+    title: Local manual investigation
+    environment: local
+    method: manual
+  - id: local-participant-lab
+    path: walkthroughs/participant-lab-guide.md
+    title: Scenario 1 participant lab guide
+    environment: progressive-local-and-aws
+    method: manual-deterministic-and-scenario-orchestrated
+status: draft

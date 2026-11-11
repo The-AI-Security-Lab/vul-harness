@@ -1,0 +1,3 @@
+services:
+  php-fpm:
+    image: php:8.4.27-fpm-bookworm@sha256:b75642e8c89c321039f351466134df951576fb0f7017117b3931e9a19b908d6c

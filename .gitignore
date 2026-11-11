@@ -1,0 +1,12 @@
+.vulharness-terraform-state/
+.vulharness-orchestration/
+terraform.tfstate
+terraform.tfstate.*
+.terraform/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# AWS evaluator output can contain live account and infrastructure metadata.
+# Keep it local; do not publish raw AWS evidence.
+docs/evidence/aws/
