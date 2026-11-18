@@ -33,9 +33,8 @@ git clone https://github.com/The-AI-Security-Lab/vul-harness.git
 cd vul-harness
 ```
 
-The current PHP2Shell implementation is on the
-[`stage1-nov-26-workshop` branch](https://github.com/The-AI-Security-Lab/vul-harness/tree/stage1-nov-26-workshop).
-Read [SECURITY.md](SECURITY.md) before running any lab.
+The PHP2Shell implementation is available on `main`. Read [SECURITY.md](SECURITY.md)
+before running any lab.
 
 ### Create a scenario
 
@@ -46,7 +45,7 @@ need AWS, an agent, a skill, orchestration, or advanced evaluations.
 
 ## What's available today
 
-The following capabilities are implemented in the PHP2Shell workshop branch:
+The following capabilities are implemented in the PHP2Shell scenario on `main`:
 
 - Local Docker Labs A and B with manual investigation and a remediation/reset
   lifecycle.
@@ -107,11 +106,8 @@ and independent golden expectations.
 
 ## Branch and implementation status
 
-The default `main` branch currently contains the public project foundation.
-The complete PHP2Shell implementation and workshop documentation remain on
-[`stage1-nov-26-workshop`](https://github.com/The-AI-Security-Lab/vul-harness/tree/stage1-nov-26-workshop)
-while participant validation continues. The workshop branch has not been
-merged into `main` by this documentation update.
+The default `main` branch contains the public project foundation and the
+complete PHP2Shell implementation and workshop documentation.
 
 ### Roadmap
 
@@ -120,9 +116,9 @@ planning targets, not commitments.
 
 | Capability | Status / target |
 | --- | --- |
-| PHP2Shell local labs and deterministic checks | Available on the workshop branch |
-| AWS CLI, CloudFormation, and Terraform labs | Available on the workshop branch |
-| PHP2Shell VulHarness orchestration | Available on the workshop branch |
+| PHP2Shell local labs and deterministic checks | Available on `main` |
+| AWS CLI, CloudFormation, and Terraform labs | Available on `main` |
+| PHP2Shell VulHarness orchestration | Available on `main` |
 | Reusable coding-agent skills | Indicative December 2026 workshop target |
 | Chief of Staff Agent | Indicative Q1 2027 workshop target |
 | Generalized multi-scenario Harness | Indicative Q1 2027 target |
