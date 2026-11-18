@@ -20,7 +20,12 @@ Participants are responsible for least privilege, isolation, scope control, prov
 
 VulHarness does not distribute intentionally vulnerable applications. Contributors may provide reproducible setup instructions and configuration examples, but those instructions must identify the source and provenance of the environment and remain within an authorized testing context.
 
-The initial repository does not implement executable checks, workflows, skills, integrations, agent orchestration, cloud infrastructure, or the future Core Harness.
+The PHP2Shell reference scenario includes local deterministic checks, independent
+evaluations, AWS provisioning wrappers, an authenticated SSM runtime workflow,
+and a PHP2Shell-specific orchestration command. These components remain
+scenario-specific and participant-run. Reusable skills, generic workflows,
+provider-independent integrations, autonomous agent orchestration, and the
+future Core Harness are not implemented.
 
 ## Reporting a security issue in VulHarness
 
