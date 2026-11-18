@@ -100,6 +100,54 @@ class RemediationEvaluationTests(unittest.TestCase):
             )
         self.assertEqual(exit_code, 1)
         self.assertIn("Result: FAIL", output.getvalue())
+        self.assertIn(
+            "Summary: FAIL — state=before; Lab B serves PHP 8.4.27, expected 8.4.26.",
+            output.getvalue(),
+        )
+        self.assertIn("Next action: Reset Lab B to its baseline", output.getvalue())
+
+    def test_passed_before_state_has_state_aware_next_action(self) -> None:
+        rendered = evaluate.render_result(evaluate.evaluate_state("before", report("8.4.26")))
+        self.assertIn("Summary: PASS — state=before", rendered)
+        self.assertIn("Next action: Record the baseline evidence", rendered)
+        self.assertIn("Application exploitability assessed: no", rendered)
+
+    def test_config_only_summary_and_next_action_are_state_aware(self) -> None:
+        rendered = evaluate.render_result(
+            evaluate.evaluate_state(
+                "config-only", report("8.4.26"), desired_image=evaluate.FIXED_IMAGE
+            )
+        )
+        self.assertIn("Summary: PASS — state=config-only", rendered)
+        self.assertIn("Next action: Apply the approved Lab B update", rendered)
+
+    def test_evidence_error_next_action_does_not_direct_a_reset(self) -> None:
+        def unavailable(target):
+            del target
+            raise evaluate.checker.EvidenceError(
+                "target_unavailable", "Lab B is unavailable.", operational=True
+            )
+
+        result = evaluate.evaluate_state(
+            "before", evaluate.checker.run_check(LAB_B, unavailable)
+        )
+        rendered = evaluate.render_result(result)
+        self.assertIn("Summary: FAIL — state=before; runtime evidence error target_unavailable", rendered)
+        self.assertIn("Next action: Resolve the evidence error", rendered)
+        self.assertNotIn("Next action: Reset Lab B", rendered)
+
+    def test_setup_error_has_summary_and_next_action(self) -> None:
+        output = StringIO()
+        with redirect_stdout(output):
+            exit_code = evaluate.main(
+                ["--state", "before"],
+                report_provider=lambda: (_ for _ in ()).throw(
+                    evaluate.checker.ConfigurationError("target configuration is missing")
+                ),
+            )
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Summary: FAIL — state=before; evaluation setup failed.", output.getvalue())
+        self.assertIn("Next action: Resolve the evaluation setup error", output.getvalue())
 
     @patch.object(evaluate, "_run_inspection")
     def test_config_inspection_uses_merged_read_only_model(self, run_inspection) -> None:

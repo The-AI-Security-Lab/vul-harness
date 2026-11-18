@@ -1,4 +1,4 @@
-# PHP2Shell Stage 1 evidence report
+# PHP2Shell Stage 1 evidence report template
 
 Use this template for the 90-minute workshop exercise:
 
@@ -81,7 +81,7 @@ docker inspect "$PHP_CONTAINER" --format '{{.Image}}'
 
 ### Authoritative fixed-version reference
 
-- Reference used: [PHP2Shell reference register](../../../references.md)
+- Reference used: [PHP2Shell reference register](../references.md)
 - CVE-2026-109618 advisory: [GHSA-w8hw-w9fx-j79w](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w)
 - CVE-2026-109619 advisory: [GHSA-6wmf-4rv5-p3rp](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp)
 - Branch being compared:

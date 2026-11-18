@@ -75,7 +75,7 @@ http://127.0.0.1:8080/?inspect=1&format=json
 
 The JSON body contains only `schema_version`, `php_version`, `sapi`, and `observed_at`. It intentionally excludes configuration details, CVE classifications, and vulnerability conclusions. The existing HTML **Inspect Runtime** and **Reset Test** behavior is unchanged.
 
-For the 90-minute workshop, use the [Stage 1 evidence-report template](../../../walkthroughs/local/manual-investigation/stage-1-evidence-report.md). It records discovery, comparison with authoritative fixed-version guidance, the remediation decision, verification of the current PHP-FPM runtime and image identity, limitations, and cleanup. The current PHP 8.4.27 lab is a fixed-version verification target; it must not be described as having been updated during the workshop unless an actual before/after transition was observed.
+For the 90-minute workshop, use the [Stage 1 evidence-report template](../../../walkthroughs/evidence-report-template.md). It records discovery, comparison with authoritative fixed-version guidance, the remediation decision, verification of the current PHP-FPM runtime and image identity, limitations, and cleanup. The current PHP 8.4.27 lab is a fixed-version verification target; it must not be described as having been updated during the workshop unless an actual before/after transition was observed.
 
 ## Independent terminal verification
 

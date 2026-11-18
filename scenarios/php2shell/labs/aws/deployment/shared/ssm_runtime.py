@@ -29,6 +29,10 @@ class RuntimeErrorWithEvidence(RuntimeError):
     pass
 
 
+def progress(message: str, status: str) -> None:
+    print(f"[VulHarness] PHP2Shell | SSM | {message} {status}", file=sys.stderr, flush=True)
+
+
 def aws_call(profile: str, region: str, service: str, *args: str) -> Any:
     command = ["aws", "--profile", profile, "--region", region, "--no-cli-pager", service, *args, "--output", "json"]
     result = subprocess.run(command, text=True, capture_output=True, check=False)
@@ -122,20 +126,53 @@ def build_commands(lab_id: str, action: str) -> list[str]:
     return commands
 
 
-def run(profile: str, region: str, method: str, deployment_id: str, lab_id: str, action: str, attempts: int, seconds: float) -> None:
+def run(
+    profile: str,
+    region: str,
+    method: str,
+    deployment_id: str,
+    lab_id: str,
+    action: str,
+    attempts: int,
+    seconds: float,
+    *,
+    operation_name: str | None = None,
+) -> None:
+    started = time.monotonic()
+    operation = operation_name or ("bootstrap" if action == "base" else action)
+    progress(f"{operation} {lab_id} deployment={deployment_id}", "STARTED")
+    progress(f"discover active {lab_id} instance", "STARTED")
     instance_id = find_instance(profile, region, method, deployment_id, lab_id)
+    progress(f"discovered {lab_id} instance={instance_id}", "OK")
     commands = build_commands(lab_id, action)
     parameters = json.dumps({"commands": commands}, separators=(",", ":"))
+    progress(f"send {operation} command to {lab_id} instance={instance_id}", "REQUESTED")
     response = aws_call(profile, region, "ssm", "send-command", "--document-name", "AWS-RunShellScript", "--instance-ids", instance_id, "--parameters", parameters, "--timeout-seconds", "900")
     command_id = response["Command"]["CommandId"]
+    progress(f"SSM command={command_id} accepted for {lab_id}", "OK")
     terminal = {"Success", "Failed", "TimedOut", "Cancelled", "Cancelling"}
     last: dict[str, Any] = {}
-    for _ in range(attempts):
+    next_report = 0.0
+    for attempt in range(1, attempts + 1):
         last = aws_call(profile, region, "ssm", "get-command-invocation", "--command-id", command_id, "--instance-id", instance_id)
         if last.get("Status") in terminal:
+            progress(
+                f"SSM command={command_id} lab={lab_id} status={last.get('Status')} elapsed={time.monotonic() - started:.1f}s",
+                "OK" if last.get("Status") == "Success" else "FAILED",
+            )
             break
+        elapsed = time.monotonic() - started
+        if attempt == 1 or elapsed >= next_report:
+            progress(
+                f"waiting for SSM command={command_id} lab={lab_id} status={last.get('Status', 'Pending')} attempt={attempt}/{attempts} elapsed={elapsed:.1f}s",
+                "WAITING",
+            )
+            next_report = elapsed + max(15.0, seconds)
         time.sleep(seconds)
+    if last.get("Status") not in terminal:
+        progress(f"SSM command={command_id} lab={lab_id} exhausted bounded polling", "FAILED")
     if last.get("Status") != "Success":
+        progress(f"{operation} {lab_id} command={command_id} did not complete successfully", "FAILED")
         raise RuntimeErrorWithEvidence(
             "SSM bootstrap timed out or failed: "
             f"deployment={deployment_id} lab={lab_id} instance={instance_id} "
@@ -144,7 +181,18 @@ def run(profile: str, region: str, method: str, deployment_id: str, lab_id: str,
             f"{'remediate' if action == 'remediate' else 'bootstrap'} --method {method} "
             f"--deployment-id {deployment_id} --lab-id {lab_id}'"
         )
-    print(f"SSM bootstrap succeeded: deployment={deployment_id} lab={lab_id} instance={instance_id} command={command_id}")
+    print(f"SSM command execution: Success (deployment={deployment_id} lab={lab_id} instance={instance_id} command={command_id})")
+    result_label = {
+        "bootstrap": "Bootstrap result",
+        "reset": "Reset result",
+        "remediate": "Remediation result",
+    }[operation]
+    if action == "remediate":
+        print(f"{result_label}: approved Lab D update override transferred and checked; fixed image pulled; PHP-FPM and Nginx services recreated.")
+    else:
+        print(f"{result_label}: approved lab assets transferred and checked; Docker enabled; Compose validated; base lab services started.")
+    print("Runtime verification and vulnerability classification were not performed by this SSM operation; run the evaluator next.")
+    progress(f"{operation} {lab_id} deployment={deployment_id}", "OK")
 
 
 def main() -> int:
@@ -160,7 +208,17 @@ def main() -> int:
     args = parser.parse_args()
     action = "remediate" if args.action == "remediate" else "base"
     try:
-        run(args.profile, args.region, args.method, args.deployment_id, args.lab_id, action, args.attempts, args.seconds)
+        run(
+            args.profile,
+            args.region,
+            args.method,
+            args.deployment_id,
+            args.lab_id,
+            action,
+            args.attempts,
+            args.seconds,
+            operation_name=args.action,
+        )
     except (OSError, RuntimeErrorWithEvidence) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

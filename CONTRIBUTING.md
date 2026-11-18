@@ -56,6 +56,24 @@ Use the methodology in the [scenario development guide](docs/scenario-developmen
 to decide which parts are appropriate. Manual-only, local-only, and
 documentation-led contributions remain first-class.
 
+### Preferred scenario structure
+
+When a scenario has several types of content, prefer this layout:
+
+```text
+scenarios/<scenario>/
+├── walkthroughs/   participant journeys and evidence methodology
+├── labs/           scenario-specific environments and provider operations
+├── checks/         deterministic evidence collection
+└── evals/          independent comparisons with expected outcomes
+```
+
+The folders are responsibility boundaries, not a requirement that every
+scenario implement every layer. Keep a check with its scenario when it is
+scenario-specific or is demonstrably shared by that scenario's CLI and
+evaluators. Move it to a reusable framework location only after multiple
+scenarios need the same provider-independent contract.
+
 ## Reusable content and integrations
 
 Keep reusable content separate from scenario-specific content:
@@ -67,9 +85,38 @@ Keep reusable content separate from scenario-specific content:
 - **Evaluations** independently compare observed evidence with expected conditions and outcomes.
 - **Integrations** are optional adapters for external clouds, systems, products, APIs, MCP servers, and CI/CD platforms.
 
+Document the execution mode of each participant-facing operation:
+
+- manual investigation or direct Console/runtime observation;
+- direct provider/runtime command;
+- deployment-wrapper automation;
+- runtime automation such as SSM;
+- deterministic check;
+- independent evaluation; or
+- scenario-specific orchestration.
+
+Provider reference material should be centralized under a scenario's `labs/README.md`
+when practical. A participant walkthrough should preserve the learning sequence
+and link to that reference rather than duplicating a complete AWS, Terraform, or
+CloudFormation manual. A wrapper that provisions infrastructure is not a
+resource-by-resource manual procedure.
+
 Scenarios may reference reusable workflows and skills, but should not copy or own them. Generic checks should eventually live in shared framework components; scenario-specific checks may remain with their scenario. Provider-specific adapters are permitted, but reusable interfaces must remain provider-independent.
 
 Integrations should preserve source, timestamp, scope, freshness, and coverage information. Findings from an external security product must not automatically be treated as verified runtime exposure.
+
+New environments should document their authorization boundary, prerequisites,
+provenance, expected and observed state, costs, permissions, reset and cleanup
+path, and the evidence transport. Extend checks only when the additional
+evidence is bounded and reproducible. Extend evaluations with explicit golden
+expectations, missing-evidence behavior, and independent tests; do not let an
+agent or wrapper self-report establish the result.
+
+The current PHP2Shell orchestrator is intentionally scenario-specific. Future
+agents or skills should reuse its existing scoped operations, wrappers, checks,
+and evaluators instead of duplicating them. Consequential setup, remediation,
+reset, and cleanup require human authorization; destructive cleanup must retain
+exact ownership checks, dry-run review, and independent absence verification.
 
 ## Technical references
 

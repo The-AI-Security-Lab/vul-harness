@@ -1,16 +1,38 @@
 # PHP2Shell walkthroughs
 
-Walkthroughs are organized by environment and investigation method. The directory structure is not a mandatory learning-level hierarchy, and a scenario may eventually support multiple combinations of environment and method.
+Walkthroughs contain participant journeys, manual evidence methodology, and
+expected outcomes. They are organized by environment and investigation method;
+the directory structure is not a mandatory learning-level hierarchy, and a
+scenario may eventually support multiple combinations of environment and method.
 
 ## Canonical participant journey
 
 - [Participant Lab Guide](participant-lab-guide.md)
 
-This is the single self-service lab journey. It progresses through prerequisites, the scope-aware orchestration command, local manual investigation, deterministic automation, remediation and independent verification, implemented AWS Labs C/D, cleanup, and troubleshooting. Each stage states whether it is implemented or planned.
+This is the single self-service lab journey. It progresses through prerequisites,
+manual investigation, deterministic checks, independent evaluation, AWS
+deployment/runtime operations, orchestration, cleanup, and troubleshooting.
+Each stage states whether it is implemented or planned.
+
+Execution modes used by the guide are:
+
+- **Manual investigation:** participant observation through the browser, AWS
+  Console, Session Manager, Docker, or PHP commands.
+- **Direct provider/runtime command:** a raw `aws`, `docker compose`, Terraform,
+  CloudFormation, or runtime command executed within the stated scope.
+- **Wrapper automation:** a repository deployment wrapper provisions or cleans
+  up infrastructure through one selected provider method.
+- **Runtime automation:** the shared SSM workflow changes or inspects an
+  already-deployed runtime.
+- **Check or evaluation:** deterministic evidence collection or an independent
+  comparison with expected outcomes.
+- **Harness orchestration:** the scenario-specific Python command coordinates
+  existing components and approvals.
 
 ## Supporting evidence reference
 
 - [Local manual investigation](local/manual-investigation/README.md)
+- [Stage 1 evidence-report template](evidence-report-template.md)
 
 The manual investigation document and evidence-report template provide deeper evidence requirements and report structure. They support the canonical guide; they are not separate participant journeys.
 

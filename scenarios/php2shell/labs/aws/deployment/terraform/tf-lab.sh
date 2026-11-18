@@ -15,6 +15,7 @@ STATE_DIR=""
 STATE_FILE=""
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+progress() { printf '[VulHarness] PHP2Shell | terraform | %s %s\n' "$1" "$2" >&2; }
 aws_cli() { aws --profile "$AWS_PROFILE" --region "$AWS_REGION" --no-cli-pager "$@"; }
 source "$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../shared" && pwd)/guardduty_cleanup.sh"
 usage() {
@@ -188,25 +189,67 @@ report_external_vpc_dependencies() {
 }
 
 deploy() {
+    progress 'deploy' STARTED
     validate_inputs
+    progress "Terraform init for $DEPLOYMENT_ID" STARTED
     tf_init -input=false -no-color
+    progress "Terraform init for $DEPLOYMENT_ID" OK
+    progress "Terraform apply for $DEPLOYMENT_ID" REQUESTED
     tf apply -input=false -auto-approve -no-color \
         -var="profile=$AWS_PROFILE" -var="region=$AWS_REGION" -var="deployment_id=$DEPLOYMENT_ID" -var="expires_at=$EXPIRES_AT" -var="owner=$OWNER"
+    progress "deployment verification for $DEPLOYMENT_ID" STARTED
     verify_state_ownership
+    print_deployment_summary
+    progress "deployment verification for $DEPLOYMENT_ID" OK
     printf 'Terraform deployment applied: %s\n' "$DEPLOYMENT_ID"
     printf 'State retained at: %s\n' "$STATE_FILE"
+    progress "Terraform apply for $DEPLOYMENT_ID" OK
+    progress 'deploy' OK
+}
+
+terraform_output_raw() {
+    output_name="$1"
+    TF_DATA_DIR="$STATE_DIR/.terraform" terraform -chdir="$TF_DIR" output \
+        -state="$STATE_FILE" -raw "$output_name"
+}
+
+print_deployment_summary() {
+    account_id="$(aws_cli sts get-caller-identity --query 'Account' --output text 2>/dev/null || printf '<unavailable>')"
+    vpc_id="$(terraform_output_raw vpc_id)"
+    subnet_id="$(terraform_output_raw subnet_id)"
+    security_group_id="$(terraform_output_raw security_group_id)"
+    lab_c_instance_id="$(terraform_output_raw lab_c_instance_id)"
+    lab_d_instance_id="$(terraform_output_raw lab_d_instance_id)"
+    instance_type="$(aws_cli ec2 describe-instances \
+        --instance-ids "$lab_c_instance_id" "$lab_d_instance_id" \
+        --query 'Reservations[].Instances[].InstanceType | [0]' --output text)"
+    printf '\nDeployment summary:\n'
+    printf '%-20s %s\n' 'Deployment ID' "$DEPLOYMENT_ID"
+    printf '%-20s %s\n' 'Deployment method' "$DEPLOYMENT_METHOD"
+    printf '%-20s %s\n' 'AWS account' "$account_id"
+    printf '%-20s %s\n' 'Region' "$AWS_REGION"
+    printf '%-20s %s\n' 'VPC' "$vpc_id"
+    printf '%-20s %s\n' 'Subnet' "$subnet_id"
+    printf '%-20s %s\n' 'Security group' "$security_group_id"
+    printf '%-20s %s\n' 'Lab C EC2 instance' "$lab_c_instance_id"
+    printf '%-20s %s\n' 'Lab D EC2 instance' "$lab_d_instance_id"
+    printf '%-20s %s\n' 'Instance type' "$instance_type"
+    printf '%-20s %s\n' 'Deployment status' 'Success'
 }
 
 status() {
+    progress 'status' STARTED
     validate_inputs
-    [ -s "$STATE_FILE" ] || { printf 'Status: INCOMPLETE; Terraform state not found: %s\n' "$STATE_FILE"; return 2; }
+    [ -s "$STATE_FILE" ] || { printf 'Status: INCOMPLETE; Terraform state not found: %s\n' "$STATE_FILE"; progress 'status' FAILED; return 2; }
     verify_state_ownership
     state_summary
+    progress 'status' OK
 }
 
 cleanup() {
+    progress 'cleanup' STARTED
     validate_inputs
-    [ -s "$STATE_FILE" ] || { printf 'Cleanup target: Terraform state not found: %s\n' "$STATE_FILE"; return 0; }
+    [ -s "$STATE_FILE" ] || { printf 'Cleanup target: Terraform state not found: %s\n' "$STATE_FILE"; progress 'cleanup' SKIPPED; return 0; }
     verify_state_ownership
     vpc_id="$(terraform_vpc_id)"
     [ -n "$vpc_id" ] && [ "$vpc_id" != None ] || die "Terraform state did not report a VPC output"
@@ -220,15 +263,19 @@ cleanup() {
         tf plan -destroy -input=false -no-color \
             -var="profile=$AWS_PROFILE" -var="region=$AWS_REGION" -var="deployment_id=$DEPLOYMENT_ID" -var="expires_at=$EXPIRES_AT" -var="owner=$OWNER"
         printf 'Dry run only: no resources were changed.\n'
+        progress 'cleanup' OK
         return 0
     fi
     [ -t 0 ] || die 'confirmed cleanup requires an interactive terminal'
     printf 'Type DELETE %s to permanently remove this Terraform deployment: ' "$DEPLOYMENT_ID"
     read -r confirmation
     [ "$confirmation" = "DELETE $DEPLOYMENT_ID" ] || die 'cleanup confirmation did not match'
+    progress "Terraform destroy for $DEPLOYMENT_ID" REQUESTED
     tf destroy -input=false -auto-approve -no-color \
         -var="profile=$AWS_PROFILE" -var="region=$AWS_REGION" -var="deployment_id=$DEPLOYMENT_ID" -var="expires_at=$EXPIRES_AT" -var="owner=$OWNER"
     printf 'Terraform destroy completed; retain state until independent AWS absence verification succeeds.\n'
+    progress "Terraform destroy for $DEPLOYMENT_ID" OK
+    progress 'cleanup' OK
 }
 
 parse_args() {

@@ -1,55 +1,101 @@
 # Scenarios
 
-A scenario describes a vulnerability or security finding in a bounded, authorized environment. It includes affected conditions, technical references, evidence requirements, and expected outcomes, while remaining independent of any particular cloud provider or agent.
+## What is a scenario?
 
-## Scenario responsibilities
+A scenario describes a vulnerability or security finding in a bounded,
+authorized environment. It defines the security question, affected conditions,
+technical references, evidence requirements, and expected outcomes without
+depending on a particular cloud provider or agent.
 
-A scenario may define or reference:
+Keep three concepts separate:
 
-- Identity, title, description, and status
-- Affected conditions and environment assumptions
-- Optional scenario-specific labs and their provenance
-- References to authoritative advisories or primary technical sources
-- Participant-facing walkthroughs
-- Reusable workflows and skills that can be applied to the scenario
-- Evidence requirements and expected outcomes
-- Evaluation definitions and checks, when they exist
-- A concise practitioner-facing `What You Need to Know` quick advisory in the scenario README
+- A **scenario** defines what is being investigated and what evidence supports
+  each conclusion.
+- A **lab** is an optional, scenario-specific environment in which the
+  investigation can be performed.
+- An **execution method** describes how the work is performed, such as manual
+  observation, a direct provider command, deterministic automation, or a
+  scenario-specific orchestrator.
 
-Scenarios do not distribute intentionally vulnerable applications and should not embed provider-specific behavior into reusable interfaces.
+Scenarios do not distribute intentionally vulnerable applications or embed
+provider-specific behavior into reusable interfaces.
 
-## Separation from reusable content
+## PHP2Shell as the reference example
 
-Walkthroughs, workflows, skills, checks, evaluations, and integrations have distinct responsibilities:
+[PHP2Shell](php2shell/README.md) is the first reference scenario. It demonstrates
+how a manual investigation can become repeatable deterministic evidence
+collection and independent evaluation. It is a reference example, not a
+mandatory template for every scenario.
 
-- A **walkthrough** is a goal-oriented investigation or response for an environment and execution method.
-- A **workflow** provides reusable security-process orchestration.
-- A **skill** provides reusable agent-readable instructions or a practitioner procedure.
-- A **check** verifies or collects a concrete evidence item.
-- An **evaluation** independently compares observed evidence with expected conditions and outcomes.
-- An **integration** adapts an external system while preserving provenance, scope, timestamps, freshness, and coverage.
+## Minimum scenario structure
 
-A **lab** is a scenario-specific controlled environment for reproducible investigation. Labs are optional and are not components of the reusable Core Harness.
+Repository conventions do not enforce one universal runtime schema. The
+following is a small, reviewable starting point rather than a requirement that
+every scenario implement every folder:
 
-Scenarios may reference reusable workflows and skills, but they must not copy or own definitions intended to be shared. Manual-only scenarios are valid and do not require agent integration.
+```text
+scenarios/<scenario-id>/
+├── README.md          scenario advisory, scope, evidence, and outcomes
+├── scenario.yaml      scenario metadata when machine-readable metadata is used
+├── references.md      authoritative technical references when needed
+└── walkthroughs/      at least one participant or practitioner journey
+```
 
-Every new vulnerability scenario should include one scenario-level quick advisory near the beginning of its README. The advisory should summarize what happened, confirmed identifiers, affected technologies and relevant conditions, evidence requirements, verified remediation, authoritative references, and uncertainty. Walkthroughs do not each need a separate advisory.
+The README and a clear investigation walkthrough are the important starting
+points. Add `scenario.yaml` when the scenario uses repository metadata
+conventions, and add `references.md` when public technical claims need a
+reference register. `labs/`, `checks/`, and `evals/` are optional extensions.
+PHP2Shell uses all of these layers because its workshop requires them; a
+manual-only or documentation-led scenario can be smaller.
 
-## Environments and methods
+## How to create a scenario
 
-Environment and execution method are independent dimensions. Potential environments include local Docker, virtual machines, EC2, ECS, EKS, other Kubernetes environments, Azure, Google Cloud, on-premises infrastructure, and CI/CD pipelines. Potential methods include manual, deterministic scripted, Core Harness-driven, agent-assisted, skill-based, MCP/API-assisted, cloud-inventory, security-product-enriched, continuous, and scheduled assessment.
+1. Define the intended security outcome, affected conditions, authorization
+   boundary, and what is explicitly out of scope.
+2. Research authoritative sources and record scope, freshness, affected
+   conditions, fixed versions, provenance, and uncertainty.
+3. Write a manual walkthrough with commands, expected observations, evidence
+   sources, timestamps, limitations, and safe cleanup.
+4. Add only the lab environments needed to answer the investigation question.
+5. Add deterministic checks or independent evaluations when repeatability adds
+   value. Keep configured, expected, and observed state distinct.
+6. If orchestration is useful, coordinate existing operations only after the
+   manual and evaluation contracts are stable.
+7. Validate links, paths, command examples, tests, evidence handling, and the
+   complete file tree before submitting a focused pull request.
 
-PHP2Shell provides one canonical participant guide that progresses from the implemented local manual and deterministic journey into the implemented AWS Labs C/D workflow and clearly marked planned agent-assisted stages. The separate manual-investigation evidence reference remains available for deeper collection. Future combinations should extend the scenario guide without describing scaffolds as deployed functionality.
+The scenario-level **What You Need to Know** advisory belongs near the top of
+the scenario README. It should summarize the finding, affected technology and
+conditions, evidence requirements, verified remediation, authoritative
+references, and uncertainty. It must not turn a version classification into a
+claim of exploitability.
 
-## Scenario lifecycle
+## Optional advanced components
 
-1. Define the intended security outcome, affected conditions, and authorization boundary.
-2. Record target version, configuration, provenance, scope, and environment assumptions.
-3. Add one or more reproducible walkthroughs.
-4. Define evidence requirements and expected outcomes.
-5. Review uncertainty, configured versus expected versus observed behavior, failure modes, and cleanup.
-6. Submit the scenario through a pull request for review.
+- **Labs** provide reproducible local, cloud, or other authorized environments
+  when the environment changes the evidence or operational decision.
+- **Checks** collect bounded, concrete evidence with stable inputs and outputs.
+- **Evaluations** independently compare evidence with golden expectations,
+  including missing, stale, failed, and cleanup states where relevant.
+- **Workflows, skills, and integrations** may be referenced when they are
+  genuinely reusable and provider-independent.
+- **Orchestration** may coordinate a scenario's existing commands, but it is
+  not a generic agent interface and must preserve human approval boundaries.
 
-## Reference scenario
+Manual-only scenarios are valid. Do not add AWS, coding agents, skills, MCP,
+orchestration, advanced evaluations, or hypothetical environments merely to
+match PHP2Shell.
 
-[PHP2Shell](php2shell/README.md) is the first reference scenario. It demonstrates the documentation and metadata model without receiving special treatment in framework interfaces.
+## Contribution and review requirements
+
+Read the [scenario-development guide](../docs/scenario-development-guide.md) and
+[CONTRIBUTING.md](../CONTRIBUTING.md) before opening a pull request. A complete
+proposal should make its authorization boundary, environment provenance,
+expected outcomes, evidence sources, uncertainty, permissions, cost, reset,
+cleanup, and unsupported conclusions clear.
+
+Evaluations must remain independent: an agent, wrapper, or orchestrator may
+collect or report evidence, but its self-reported success is not proof. Preserve
+source, scope, timestamp, freshness, and limitations for evidence, and do not
+include credentials, private data, vulnerable applications, or unnecessary
+exploit tooling.

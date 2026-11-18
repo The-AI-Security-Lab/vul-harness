@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -31,6 +32,20 @@ class HarnessContractTests(unittest.TestCase):
             code = harness.main(["status", "--env", "local", "--method", "aws-cli"])
         self.assertEqual(code, harness.EXIT_USAGE)
         self.assertIn("valid only with --env aws", stream.getvalue())
+
+    def test_rejects_empty_aws_region_before_planning(self):
+        with self.assertRaises(harness.HarnessError):
+            args_for(
+                "status",
+                "--env",
+                "aws",
+                "--method",
+                "aws-cli",
+                "--deployment-id",
+                "vh-cli-test-a1b2c3d4",
+                "--region",
+                "",
+            )
 
     def test_mutating_operations_require_operation_specific_approval(self):
         with self.assertRaises(harness.HarnessError):
@@ -102,10 +117,97 @@ class HarnessContractTests(unittest.TestCase):
             self.assertEqual(harness.run_aws(args), 0)
         plan = run_plan.call_args.args[2]
         command = plan[0][1]
+        environment = plan[0][2]
         self.assertIn("--deployment-id", command)
         self.assertIn("vh-cli-test-a1b2c3d4", command)
+        self.assertNotIn("--owner", command)
+        self.assertEqual(environment["VULHARNESS_OWNER"], "workshop")
         self.assertEqual(command[-1], "deploy")
         self.assertEqual([step[0] for step in plan[-2:]], ["SSM bootstrap lab-c", "SSM bootstrap lab-d"])
+
+    def test_aws_cli_wrapper_uses_owner_environment_without_owner_argument(self):
+        args = args_for(
+            "status",
+            "--env",
+            "aws",
+            "--method",
+            "aws-cli",
+            "--deployment-id",
+            "vh-cli-test-a1b2c3d4",
+            "--owner",
+            "security-team",
+        )
+        command, environment = harness.aws_wrapper_plan(args, "status")[0][1:]
+        self.assertNotIn("--owner", command)
+        self.assertEqual(environment["VULHARNESS_OWNER"], "security-team")
+
+    def test_aws_cli_status_uses_owner_environment_without_owner_argument(self):
+        args = args_for(
+            "status",
+            "--env",
+            "aws",
+            "--method",
+            "aws-cli",
+            "--deployment-id",
+            "vh-cli-test-a1b2c3d4",
+        )
+        with patch.object(harness, "run_plan", return_value=0) as run_plan:
+            self.assertEqual(harness.run_aws(args), 0)
+        command, environment = run_plan.call_args.args[2][0][1:]
+        self.assertNotIn("--owner", command)
+        self.assertEqual(environment["VULHARNESS_OWNER"], "workshop")
+
+    def test_aws_cli_owner_is_loaded_from_matching_metadata(self):
+        args = args_for(
+            "status",
+            "--env",
+            "aws",
+            "--method",
+            "aws-cli",
+            "--deployment-id",
+            "vh-cli-test-a1b2c3d4",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            metadata = Path(directory) / "deployment.json"
+            metadata.write_text(json.dumps({"owner": "recorded-owner"}), encoding="utf-8")
+            with patch.object(harness, "metadata_path", return_value=metadata), patch.dict(
+                harness.os.environ, {"VULHARNESS_OWNER": ""}, clear=False
+            ):
+                command, environment = harness.aws_wrapper_plan(args, "status")[0][1:]
+        self.assertNotIn("--owner", command)
+        self.assertEqual(environment["VULHARNESS_OWNER"], "recorded-owner")
+
+    def test_cloudformation_and_terraform_keep_owner_argument(self):
+        for method in ("cloudformation", "terraform"):
+            args = args_for(
+                "status",
+                "--env",
+                "aws",
+                "--method",
+                method,
+                "--deployment-id",
+                f"vh-{method[:3]}-test-a1b2c3d4",
+                "--owner",
+                "security-team",
+            )
+            command, _environment = harness.aws_wrapper_plan(args, "status")[0][1:]
+            owner_index = command.index("--owner")
+            self.assertEqual(command[owner_index + 1], "security-team")
+
+    def test_owner_mismatch_is_not_silently_replaced(self):
+        args = args_for(
+            "status",
+            "--env",
+            "aws",
+            "--method",
+            "aws-cli",
+            "--deployment-id",
+            "vh-cli-test-a1b2c3d4",
+            "--owner",
+            "wrong-owner",
+        )
+        _command, environment = harness.aws_wrapper_plan(args, "status")[0][1:]
+        self.assertEqual(environment["VULHARNESS_OWNER"], "wrong-owner")
 
     def test_environment_deployment_identity_is_accepted_and_new_ids_get_expiry(self):
         deployment_id = "vh-cli-test-a1b2c3d4"
@@ -182,10 +284,16 @@ class HarnessContractTests(unittest.TestCase):
             "aws-cli",
             "--deployment-id",
             "vh-cli-test-a1b2c3d4",
+            "--profile",
+            "participant-profile",
+            "--region",
+            "eu-west-1",
             "--phase",
             "remediated",
         )
         command = harness.aws_evaluator_plan(args, include_ssm=True)[0][1]
+        self.assertEqual(command[command.index("--profile") + 1], "participant-profile")
+        self.assertEqual(command[command.index("--region") + 1], "eu-west-1")
         self.assertIn("--phase", command)
         self.assertIn("remediated", command)
         self.assertIn("--include-ssm", command)
@@ -218,6 +326,68 @@ class HarnessContractTests(unittest.TestCase):
         command = harness.aws_wrapper_plan(args, "cleanup")[0][1]
         self.assertNotIn("--allow-guardduty-cleanup", command)
         self.assertIn("--dry-run", command)
+
+    def test_run_plan_reports_numbered_progress_on_stderr(self):
+        args = args_for("status", "--env", "local", "--lab", "lab-a")
+        completed = [
+            {"label": "first", "returncode": 0, "ok": True, "command": ["mock"]},
+            {"label": "second", "returncode": 0, "ok": True, "command": ["mock"]},
+        ]
+        progress_output = io.StringIO()
+        with redirect_stderr(progress_output), patch.object(
+            harness, "execute", side_effect=completed
+        ):
+            code = harness.run_plan(
+                args,
+                "local status",
+                [("first", ["mock"], None), ("second", ["mock"], None)],
+            )
+        self.assertEqual(code, harness.EXIT_OK)
+        output = progress_output.getvalue()
+        self.assertIn("[VulHarness] local status STARTED", output)
+        self.assertIn("local status step 1/2: first STARTED", output)
+        self.assertIn("local status step 2/2: second OK", output)
+        self.assertIn("[VulHarness] local status OK", output)
+
+    def test_run_plan_keeps_json_stdout_parseable_and_reports_failure_progress(self):
+        args = args_for(
+            "status",
+            "--env",
+            "aws",
+            "--method",
+            "aws-cli",
+            "--deployment-id",
+            "vh-cli-test-a1b2c3d4",
+            "--output",
+            "json",
+        )
+        failed = {"label": "status", "returncode": 2, "ok": False, "command": ["mock"]}
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr), patch.object(
+            harness, "execute", return_value=failed
+        ):
+            code = harness.run_plan(args, "AWS aws-cli status", [("status", ["mock"], None)])
+        self.assertEqual(code, harness.EXIT_BLOCKED)
+        payload = json.loads(stdout.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertIn("AWS aws-cli status FAILED", stderr.getvalue())
+        self.assertNotIn("[VulHarness]", stdout.getvalue())
+
+    def test_text_execution_streams_child_output_to_the_original_streams(self):
+        args = args_for("status", "--env", "local", "--lab", "lab-a")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        command = [
+            harness.sys.executable,
+            "-c",
+            "import sys; print('child stdout'); print('child stderr', file=sys.stderr)",
+        ]
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            result = harness.execute(args, "child", command)
+        self.assertTrue(result["ok"])
+        self.assertIn("child stdout", stdout.getvalue())
+        self.assertIn("child stderr", stderr.getvalue())
 
     def test_json_operation_reports_child_failure_without_running_live_aws(self):
         args = args_for(

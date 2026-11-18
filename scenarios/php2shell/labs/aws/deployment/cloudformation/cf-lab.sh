@@ -15,6 +15,7 @@ STACK_NAME=""
 TEMPLATE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/template.yaml"
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+progress() { printf '[VulHarness] PHP2Shell | cloudformation | %s %s\n' "$1" "$2" >&2; }
 aws_cli() { aws --profile "$AWS_PROFILE" --region "$AWS_REGION" --no-cli-pager "$@"; }
 source "$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../shared" && pwd)/guardduty_cleanup.sh"
 
@@ -131,17 +132,22 @@ report_external_vpc_dependencies() {
 }
 
 deploy() {
+    progress 'deploy' STARTED
+    progress 'prerequisites and template inputs' STARTED
     validate_inputs
     ami="$(ami_id)"
     [ -n "$ami" ] && [ "$ami" != None ] || die 'no Amazon Linux 2023 ARM64 AMI found'
     az="$(availability_zone)"
     [ -n "$az" ] && [ "$az" != None ] || die 't4g.small is not offered in the selected region'
+    progress 'prerequisites and template inputs' OK
+    progress 'resource provisioning' STARTED
     if stack_exists; then
         validate_stack_tags
         printf 'Resuming owned CloudFormation stack %s\n' "$STACK_NAME"
     else
         printf 'Creating CloudFormation stack %s\n' "$STACK_NAME"
     fi
+    progress "stack $STACK_NAME deployment request" REQUESTED
     aws_cli cloudformation deploy \
         --template-file "$TEMPLATE" \
         --stack-name "$STACK_NAME" \
@@ -157,18 +163,59 @@ deploy() {
             die "CloudFormation stack did not reach a complete state: $STACK_NAME status=$stack_status"
             ;;
     esac
+    progress 'resource provisioning' OK
+    progress 'resource verification' STARTED
+    print_deployment_summary
+    progress 'resource verification' OK
+    progress "stack $STACK_NAME deployment" OK
+    progress 'deploy' OK
+}
+
+stack_output() {
+    output_key="$1"
+    aws_cli cloudformation describe-stacks \
+        --stack-name "$STACK_NAME" \
+        --query "Stacks[0].Outputs[?OutputKey==\`$output_key\`].OutputValue | [0]" \
+        --output text
+}
+
+print_deployment_summary() {
+    account_id="$(aws_cli sts get-caller-identity --query 'Account' --output text 2>/dev/null || printf '<unavailable>')"
+    vpc_id="$(stack_output VpcId)"
+    subnet_id="$(stack_output SubnetId)"
+    security_group_id="$(stack_output SecurityGroupId)"
+    lab_c_instance_id="$(stack_output LabCInstanceId)"
+    lab_d_instance_id="$(stack_output LabDInstanceId)"
+    instance_type="$(aws_cli ec2 describe-instances \
+        --instance-ids "$lab_c_instance_id" "$lab_d_instance_id" \
+        --query 'Reservations[].Instances[].InstanceType | [0]' --output text)"
+    printf '\nDeployment summary:\n'
+    printf '%-20s %s\n' 'Deployment ID' "$DEPLOYMENT_ID"
+    printf '%-20s %s\n' 'Deployment method' "$DEPLOYMENT_METHOD"
+    printf '%-20s %s\n' 'AWS account' "$account_id"
+    printf '%-20s %s\n' 'Region' "$AWS_REGION"
+    printf '%-20s %s\n' 'VPC' "$vpc_id"
+    printf '%-20s %s\n' 'Subnet' "$subnet_id"
+    printf '%-20s %s\n' 'Security group' "$security_group_id"
+    printf '%-20s %s\n' 'Lab C EC2 instance' "$lab_c_instance_id"
+    printf '%-20s %s\n' 'Lab D EC2 instance' "$lab_d_instance_id"
+    printf '%-20s %s\n' 'Instance type' "$instance_type"
+    printf '%-20s %s\n' 'Deployment status' 'Success'
 }
 
 status() {
+    progress 'status' STARTED
     validate_inputs
-    stack_exists || { printf 'Status: INCOMPLETE; stack not found: %s\n' "$STACK_NAME"; return 2; }
+    stack_exists || { printf 'Status: INCOMPLETE; stack not found: %s\n' "$STACK_NAME"; progress 'status' FAILED; return 2; }
     validate_stack_tags
     aws_cli cloudformation describe-stacks --stack-name "$STACK_NAME" --query 'Stacks[0].{Status:StackStatus,Outputs:Outputs}' --output table
+    progress 'status' OK
 }
 
 cleanup() {
+    progress 'cleanup' STARTED
     validate_inputs
-    stack_exists || { printf 'Cleanup target: stack not found: %s\n' "$STACK_NAME"; return 0; }
+    stack_exists || { printf 'Cleanup target: stack not found: %s\n' "$STACK_NAME"; progress 'cleanup' SKIPPED; return 0; }
     validate_stack_tags
     printf 'Exact cleanup target: CloudFormation stack %s\n' "$STACK_NAME"
     vpc_id="$(stack_vpc_id)"
@@ -184,9 +231,12 @@ cleanup() {
     printf 'Type DELETE %s to permanently remove only this stack: ' "$DEPLOYMENT_ID"
     read -r confirmation
     [ "$confirmation" = "DELETE $DEPLOYMENT_ID" ] || die 'cleanup confirmation did not match'
+    progress "stack $STACK_NAME deletion request" REQUESTED
     aws_cli cloudformation delete-stack --stack-name "$STACK_NAME"
+    progress "waiting for stack $STACK_NAME deletion" WAITING
     aws_cli cloudformation wait stack-delete-complete --stack-name "$STACK_NAME"
     printf 'CloudFormation stack deletion completed: %s\n' "$STACK_NAME"
+    progress 'cleanup' OK
 }
 
 parse_args() {

@@ -87,14 +87,31 @@ die() {
     exit 1
 }
 
+progress() {
+    printf '[VulHarness] PHP2Shell | aws-cli | %s %s\n' "$1" "$2" >&2
+}
+
+wait_progress() {
+    label="$1"
+    attempt="$2"
+    maximum="$3"
+    started="$4"
+    if [ "$attempt" -eq 1 ] || [ $((attempt % 3)) -eq 0 ]; then
+        elapsed=$(( $(date +%s) - started ))
+        progress "$label attempt=$attempt/$maximum elapsed=${elapsed}s" WAITING
+    fi
+}
+
 on_error() {
     status=$?
     if [ "${BASH_SUBSHELL:-0}" -gt 0 ]; then
         exit "$status"
     fi
     if [ "$status" -eq 2 ] && [ "${COMMAND:-}" = "status" ]; then
+        progress "status" FAILED
         exit "$status"
     fi
+    [ -n "${COMMAND:-}" ] && progress "$COMMAND" FAILED
     if [ -n "${DEPLOYMENT_ID:-}" ]; then
         printf 'ERROR: deployment stopped with status %s.\n' "$status" >&2
         printf 'Affected resource IDs: vpc=%s subnet=%s igw=%s route_table=%s security_group=%s lab_c=%s lab_d=%s\n' \
@@ -140,11 +157,16 @@ retry_aws() {
 }
 
 wait_for_subnet_available() {
+    started="$(date +%s)"
     attempt=1
     while [ "$attempt" -le "$DEPENDENCY_WAIT_ATTEMPTS" ]; do
         state="$(aws_cli ec2 describe-subnets --subnet-ids "$SUBNET_ID" --query 'Subnets[0].State' --output text 2>/dev/null || true)"
         LAST_OBSERVED="subnet=$SUBNET_ID state=$state"
-        [ "$state" = "available" ] && return 0
+        if [ "$state" = "available" ]; then
+            progress "subnet $SUBNET_ID is available" OK
+            return 0
+        fi
+        wait_progress "waiting for subnet $SUBNET_ID" "$attempt" "$DEPENDENCY_WAIT_ATTEMPTS" "$started"
         sleep "$DEPENDENCY_WAIT_SECONDS"
         attempt=$((attempt + 1))
     done
@@ -153,11 +175,16 @@ wait_for_subnet_available() {
 }
 
 wait_for_igw_attachment() {
+    started="$(date +%s)"
     attempt=1
     while [ "$attempt" -le "$DEPENDENCY_WAIT_ATTEMPTS" ]; do
         state="$(aws_cli ec2 describe-internet-gateways --internet-gateway-ids "$IGW_ID" --query 'InternetGateways[0].Attachments[0].State' --output text 2>/dev/null || true)"
         LAST_OBSERVED="internet_gateway=$IGW_ID attachment_state=$state vpc=$VPC_ID"
-        [ "$state" = "available" ] && return 0
+        if [ "$state" = "available" ]; then
+            progress "Internet Gateway $IGW_ID is attached" OK
+            return 0
+        fi
+        wait_progress "waiting for Internet Gateway $IGW_ID attachment" "$attempt" "$DEPENDENCY_WAIT_ATTEMPTS" "$started"
         sleep "$DEPENDENCY_WAIT_SECONDS"
         attempt=$((attempt + 1))
     done
@@ -166,11 +193,16 @@ wait_for_igw_attachment() {
 }
 
 wait_for_route_association() {
+    started="$(date +%s)"
     attempt=1
     while [ "$attempt" -le "$DEPENDENCY_WAIT_ATTEMPTS" ]; do
         association="$(aws_cli ec2 describe-route-tables --filters Name=association.subnet-id,Values="$SUBNET_ID" --query 'RouteTables[0].RouteTableId' --output text 2>/dev/null || true)"
         LAST_OBSERVED="subnet=$SUBNET_ID route_table_association=$association expected=$ROUTE_TABLE_ID"
-        [ "$association" = "$ROUTE_TABLE_ID" ] && return 0
+        if [ "$association" = "$ROUTE_TABLE_ID" ]; then
+            progress "route table $ROUTE_TABLE_ID is associated" OK
+            return 0
+        fi
+        wait_progress "waiting for route table $ROUTE_TABLE_ID association" "$attempt" "$DEPENDENCY_WAIT_ATTEMPTS" "$started"
         sleep "$DEPENDENCY_WAIT_SECONDS"
         attempt=$((attempt + 1))
     done
@@ -179,11 +211,16 @@ wait_for_route_association() {
 }
 
 wait_for_route_disassociation() {
+    started="$(date +%s)"
     attempt=1
     while [ "$attempt" -le "$DEPENDENCY_WAIT_ATTEMPTS" ]; do
         association_count="$(aws_cli ec2 describe-route-tables --route-table-ids "$ROUTE_TABLE_ID" --query 'length(RouteTables[0].Associations[?SubnetId!=null])' --output text 2>/dev/null || true)"
         LAST_OBSERVED="route_table=$ROUTE_TABLE_ID subnet_association_count=${association_count:-unknown} expected=0"
-        [ "$association_count" = "0" ] && return 0
+        if [ "$association_count" = "0" ]; then
+            progress "route table $ROUTE_TABLE_ID associations released" OK
+            return 0
+        fi
+        wait_progress "waiting for route table $ROUTE_TABLE_ID disassociation" "$attempt" "$DEPENDENCY_WAIT_ATTEMPTS" "$started"
         sleep "$DEPENDENCY_WAIT_SECONDS"
         attempt=$((attempt + 1))
     done
@@ -192,11 +229,16 @@ wait_for_route_disassociation() {
 }
 
 wait_for_iam_profile() {
+    started="$(date +%s)"
     attempt=1
     while [ "$attempt" -le "$DEPENDENCY_WAIT_ATTEMPTS" ]; do
         attached_role="$(aws_cli iam get-instance-profile --instance-profile-name "$INSTANCE_PROFILE_NAME" --query 'InstanceProfile.Roles[0].RoleName' --output text 2>/dev/null || true)"
         LAST_OBSERVED="instance_profile=$INSTANCE_PROFILE_NAME role=${attached_role:-None} expected=$ROLE_NAME"
-        [ "$attached_role" = "$ROLE_NAME" ] && return 0
+        if [ "$attached_role" = "$ROLE_NAME" ]; then
+            progress "IAM role $ROLE_NAME is visible on instance profile" OK
+            return 0
+        fi
+        wait_progress "waiting for IAM role $ROLE_NAME on instance profile" "$attempt" "$DEPENDENCY_WAIT_ATTEMPTS" "$started"
         sleep "$DEPENDENCY_WAIT_SECONDS"
         attempt=$((attempt + 1))
     done
@@ -205,11 +247,16 @@ wait_for_iam_profile() {
 }
 
 wait_for_profile_empty() {
+    started="$(date +%s)"
     attempt=1
     while [ "$attempt" -le "$DEPENDENCY_WAIT_ATTEMPTS" ]; do
         attached_role="$(aws_cli iam get-instance-profile --instance-profile-name "$INSTANCE_PROFILE_NAME" --query 'InstanceProfile.Roles[0].RoleName' --output text 2>/dev/null || true)"
         LAST_OBSERVED="instance_profile=$INSTANCE_PROFILE_NAME role=${attached_role:-None} expected=None"
-        [ -z "$attached_role" ] || [ "$attached_role" = "None" ] && return 0
+        if [ -z "$attached_role" ] || [ "$attached_role" = "None" ]; then
+            progress "IAM instance profile $INSTANCE_PROFILE_NAME is empty" OK
+            return 0
+        fi
+        wait_progress "waiting for IAM instance profile $INSTANCE_PROFILE_NAME" "$attempt" "$DEPENDENCY_WAIT_ATTEMPTS" "$started"
         sleep "$DEPENDENCY_WAIT_SECONDS"
         attempt=$((attempt + 1))
     done
@@ -218,11 +265,16 @@ wait_for_profile_empty() {
 }
 
 wait_for_role_policy_detached() {
+    started="$(date +%s)"
     attempt=1
     while [ "$attempt" -le "$DEPENDENCY_WAIT_ATTEMPTS" ]; do
         policy_count="$(aws_cli iam list-attached-role-policies --role-name "$ROLE_NAME" --query 'length(AttachedPolicies[?PolicyArn==`arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore`])' --output text 2>/dev/null || true)"
         LAST_OBSERVED="role=$ROLE_NAME ssm_policy_count=${policy_count:-unknown} expected=0"
-        [ "$policy_count" = "0" ] && return 0
+        if [ "$policy_count" = "0" ]; then
+            progress "SSM policy is detached from $ROLE_NAME" OK
+            return 0
+        fi
+        wait_progress "waiting for SSM policy detachment from $ROLE_NAME" "$attempt" "$DEPENDENCY_WAIT_ATTEMPTS" "$started"
         sleep "$DEPENDENCY_WAIT_SECONDS"
         attempt=$((attempt + 1))
     done
@@ -231,11 +283,16 @@ wait_for_role_policy_detached() {
 }
 
 wait_for_igw_detached() {
+    started="$(date +%s)"
     attempt=1
     while [ "$attempt" -le "$DEPENDENCY_WAIT_ATTEMPTS" ]; do
         attachment_count="$(aws_cli ec2 describe-internet-gateways --internet-gateway-ids "$IGW_ID" --query 'length(InternetGateways[0].Attachments)' --output text 2>/dev/null || true)"
         LAST_OBSERVED="internet_gateway=$IGW_ID attachment_count=${attachment_count:-unknown} expected=0"
-        [ "$attachment_count" = "0" ] && return 0
+        if [ "$attachment_count" = "0" ]; then
+            progress "Internet Gateway $IGW_ID is detached" OK
+            return 0
+        fi
+        wait_progress "waiting for Internet Gateway $IGW_ID detachment" "$attempt" "$DEPENDENCY_WAIT_ATTEMPTS" "$started"
         sleep "$DEPENDENCY_WAIT_SECONDS"
         attempt=$((attempt + 1))
     done
@@ -245,11 +302,16 @@ wait_for_igw_detached() {
 
 wait_for_volume_available() {
     volume_id="$1"
+    started="$(date +%s)"
     attempt=1
     while [ "$attempt" -le "$DEPENDENCY_WAIT_ATTEMPTS" ]; do
         state="$(aws_cli ec2 describe-volumes --volume-ids "$volume_id" --query 'Volumes[0].State' --output text 2>/dev/null || true)"
         LAST_OBSERVED="volume=$volume_id state=$state expected=available"
-        [ "$state" = "available" ] && return 0
+        if [ "$state" = "available" ]; then
+            progress "volume $volume_id is available" OK
+            return 0
+        fi
+        wait_progress "waiting for volume $volume_id" "$attempt" "$DEPENDENCY_WAIT_ATTEMPTS" "$started"
         sleep "$DEPENDENCY_WAIT_SECONDS"
         attempt=$((attempt + 1))
     done
@@ -258,6 +320,7 @@ wait_for_volume_available() {
 }
 
 wait_for_ec2_ready() {
+    progress 'waiting for both EC2 instances to reach running state' STARTED
     if ! aws_cli ec2 wait instance-running --instance-ids "$LAB_C_INSTANCE_ID" "$LAB_D_INSTANCE_ID"; then
         LAST_OBSERVED="lab_c=$LAB_C_INSTANCE_ID lab_d=$LAB_D_INSTANCE_ID running_waiter=failed"
         timeout_report 'EC2 running waiter failed'
@@ -268,6 +331,7 @@ wait_for_ec2_ready() {
         timeout_report 'EC2 instance-status-ok waiter failed'
         return 1
     fi
+    progress 'both EC2 instances passed status checks' OK
 }
 
 trap on_error ERR
@@ -850,14 +914,17 @@ wait_for_ssm() {
     instance_id="$1"
     lab_id="$2"
     attempt=1
+    started="$(date +%s)"
     while [ "$attempt" -le "$SSM_WAIT_ATTEMPTS" ]; do
         ping_status="$(aws_cli ssm describe-instance-information --filters Key=InstanceIds,Values="$instance_id" --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || true)"
         if [ "$ping_status" = "Online" ]; then
             printf 'SSM: %s (%s) Online\n' "$lab_id" "$instance_id"
+            progress "SSM $lab_id is Online" OK
             return 0
         fi
         LAST_OBSERVED="lab=$lab_id instance=$instance_id ssm_ping=${ping_status:-unknown}"
         printf 'SSM: waiting for %s (%s), attempt %s/%s\n' "$lab_id" "$instance_id" "$attempt" "$SSM_WAIT_ATTEMPTS"
+        wait_progress "waiting for SSM $lab_id ($instance_id)" "$attempt" "$SSM_WAIT_ATTEMPTS" "$started"
         sleep "$SSM_WAIT_SECONDS"
         attempt=$((attempt + 1))
     done
@@ -928,31 +995,62 @@ validate_deployment() {
 }
 
 deploy() {
+    progress "deploy" STARTED
     TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/vulharness-aws.XXXXXX")"
     trap 'rm -rf "$TMP_DIR"' EXIT
+    progress "deploy step 1/6: prerequisites and resource discovery" STARTED
     validate_prerequisites
     validate_inputs
     discover_existing_resources
     validate_inputs
+    progress "deploy step 1/6: prerequisites and resource discovery" OK
     printf 'Deployment ID: %s\n' "$DEPLOYMENT_ID"
     printf 'Expiration: %s\n' "$EXPIRES_AT"
 
+    progress "deploy step 2/6: resolve Amazon Linux AMI" STARTED
     AMI_ID="$(aws_cli ec2 describe-images --owners "$AMI_OWNER" --filters Name=state,Values=available Name=name,Values="$AMI_NAME_PATTERN" --query 'reverse(sort_by(Images,&CreationDate))[0].ImageId' --output text)"
     [ -n "$AMI_ID" ] && [ "$AMI_ID" != "None" ] || die "no Amazon Linux 2023 ARM64 kernel-6.1 AMI was found"
     printf 'AMI: %s\n' "$AMI_ID"
+    progress "deploy step 2/6: resolve Amazon Linux AMI" OK
 
+    progress "deploy step 3/6: ensure network resources" STARTED
     ensure_vpc
     ensure_subnet
     ensure_igw
     ensure_route_table
     ensure_security_group
+    progress "deploy step 3/6: ensure network resources" OK
+    progress "deploy step 4/6: ensure IAM resources" STARTED
     ensure_iam
+    progress "deploy step 4/6: ensure IAM resources" OK
+    progress "deploy step 5/6: ensure EC2 instances" STARTED
     ensure_instances
+    progress "deploy step 5/6: ensure EC2 instances" OK
+    progress "deploy step 6/6: wait for instance readiness and validate" STARTED
     wait_for_ssm "$LAB_C_INSTANCE_ID" lab-c
     wait_for_ssm "$LAB_D_INSTANCE_ID" lab-d
     validate_deployment
+    progress "deploy step 6/6: wait for instance readiness and validate" OK
+    print_deployment_summary
     printf 'Deployment complete. Docker, Compose, PHP, and runtime inspection were not performed.\n'
     printf 'Export this ID for later commands: export VULHARNESS_DEPLOYMENT_ID=%s\n' "$DEPLOYMENT_ID"
+    progress "deploy" OK
+}
+
+print_deployment_summary() {
+    account_id="$(aws_cli sts get-caller-identity --query 'Account' --output text 2>/dev/null || printf '<unavailable>')"
+    printf '\nDeployment summary:\n'
+    printf '%-20s %s\n' 'Deployment ID' "$DEPLOYMENT_ID"
+    printf '%-20s %s\n' 'Deployment method' "$DEPLOYMENT_METHOD"
+    printf '%-20s %s\n' 'AWS account' "$account_id"
+    printf '%-20s %s\n' 'Region' "$AWS_REGION"
+    printf '%-20s %s\n' 'VPC' "$VPC_ID"
+    printf '%-20s %s\n' 'Subnet' "$SUBNET_ID"
+    printf '%-20s %s\n' 'Security group' "$SECURITY_GROUP_ID"
+    printf '%-20s %s\n' 'Lab C EC2 instance' "$LAB_C_INSTANCE_ID"
+    printf '%-20s %s\n' 'Lab D EC2 instance' "$LAB_D_INSTANCE_ID"
+    printf '%-20s %s\n' 'Instance type' "$INSTANCE_TYPE"
+    printf '%-20s %s\n' 'Deployment status' 'Success'
 }
 
 print_resource() {
@@ -1058,14 +1156,18 @@ cleanup_delete() {
 }
 
 cleanup() {
+    progress "cleanup" STARTED
+    progress "cleanup step 1/5: discover and verify exact targets" STARTED
     validate_prerequisites
     validate_inputs
     discover_existing_resources
     validate_inputs
     collect_cleanup_targets
     verify_cleanup_ownership
+    progress "cleanup step 1/5: discover and verify exact targets" OK
     if [ "$DRY_RUN" -eq 1 ]; then
         printf 'Dry run only: no resources were changed.\n'
+        progress "cleanup" OK
         return 0
     fi
 
@@ -1074,6 +1176,7 @@ cleanup() {
     read -r confirmation
     [ "$confirmation" = "DELETE $DEPLOYMENT_ID" ] || die "cleanup confirmation did not match; nothing was changed"
 
+    progress "cleanup step 2/5: terminate instances and release volumes" STARTED
     for instance_id in "$LAB_C_INSTANCE_ID" "$LAB_D_INSTANCE_ID"; do
         if [ -n "$instance_id" ]; then
             state="$(aws_cli ec2 describe-instances --instance-ids "$instance_id" --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || true)"
@@ -1111,11 +1214,19 @@ cleanup() {
             CLEANUP_FAILURES=$((CLEANUP_FAILURES + 1))
         fi
     done
+    if [ "$CLEANUP_FAILURES" -eq 0 ]; then
+        progress "cleanup step 2/5: terminate instances and release volumes" OK
+    else
+        progress "cleanup step 2/5: terminate instances and release volumes" FAILED
+    fi
 
+    progress "cleanup step 3/5: release verified external dependencies" STARTED
     if [ -n "$VPC_ID" ]; then
         guardduty_release "$VPC_ID" || die "GuardDuty-aware cleanup could not release the exact deployment-VPC dependency"
     fi
+    progress "cleanup step 3/5: release verified external dependencies" OK
 
+    progress "cleanup step 4/5: remove network resources" STARTED
     if [ -n "$ROUTE_TABLE_ID" ]; then
         association_id="$(aws_cli ec2 describe-route-tables --route-table-ids "$ROUTE_TABLE_ID" --query 'RouteTables[0].Associations[?SubnetId!=null].RouteTableAssociationId | [0]' --output text 2>/dev/null || true)"
         association_released=1
@@ -1154,7 +1265,13 @@ cleanup() {
     [ -z "$SECURITY_GROUP_ID" ] || cleanup_delete "security group $SECURITY_GROUP_ID" aws_cli ec2 delete-security-group --group-id "$SECURITY_GROUP_ID"
     [ -z "$SUBNET_ID" ] || cleanup_delete "subnet $SUBNET_ID" aws_cli ec2 delete-subnet --subnet-id "$SUBNET_ID"
     [ -z "$VPC_ID" ] || cleanup_delete "VPC $VPC_ID" aws_cli ec2 delete-vpc --vpc-id "$VPC_ID"
+    if [ "$CLEANUP_FAILURES" -eq 0 ]; then
+        progress "cleanup step 4/5: remove network resources" OK
+    else
+        progress "cleanup step 4/5: remove network resources" FAILED
+    fi
 
+    progress "cleanup step 5/5: remove IAM resources" STARTED
     if aws_cli iam get-instance-profile --instance-profile-name "$INSTANCE_PROFILE_NAME" >/dev/null 2>&1; then
         cleanup_delete "role removed from profile $INSTANCE_PROFILE_NAME" aws_cli iam remove-role-from-instance-profile --instance-profile-name "$INSTANCE_PROFILE_NAME" --role-name "$ROLE_NAME"
         if [ "$CLEANUP_LAST_SUCCESS" -eq 1 ] && wait_for_profile_empty; then
@@ -1176,30 +1293,37 @@ cleanup() {
 
     if [ "$CLEANUP_FAILURES" -ne 0 ]; then
         printf 'Cleanup incomplete: %s operation(s) failed. Re-run status or cleanup --dry-run.\n' "$CLEANUP_FAILURES" >&2
+        progress "cleanup step 5/5: remove IAM resources" FAILED
+        progress "cleanup" FAILED
         return 1
     fi
+    progress "cleanup step 5/5: remove IAM resources" OK
     printf 'Cleanup complete for deployment %s.\n' "$DEPLOYMENT_ID"
+    progress "cleanup" OK
 }
 
 status() {
+    progress "status" STARTED
     validate_prerequisites
     validate_inputs
     discover_existing_resources
     validate_inputs
-    collect_cleanup_targets
     if [ -n "$LAB_C_INSTANCE_ID" ] && [ -n "$LAB_D_INSTANCE_ID" ]; then
         INSTANCE_PROFILE_NAME="vh-php2shell-$DEPLOYMENT_ID-profile"
         SECURITY_GROUP_ID="${SECURITY_GROUP_ID:-}"
         if (validate_deployment); then
             printf 'Status: HEALTHY; infrastructure and SSM checks passed.\n'
             printf 'PHP runtime readiness remains unverified.\n'
+            progress "status" OK
             return 0
         fi
         printf 'Status: UNHEALTHY; tagged resources are inspectable but infrastructure validation failed.\n'
+        progress "status" FAILED
         return 2
     else
         printf 'Status: INCOMPLETE; partial deployment is inspectable but not healthy.\n'
         printf 'Use cleanup --dry-run to review exact tagged resources.\n'
+        progress "status" FAILED
         return 2
     fi
 }

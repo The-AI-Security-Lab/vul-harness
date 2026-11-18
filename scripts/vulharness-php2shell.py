@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import re
+import selectors
 import secrets
 import shutil
 import subprocess
@@ -24,6 +25,7 @@ from typing import Any, Iterable
 ROOT = Path(__file__).resolve().parents[1]
 AWS_PROFILE_DEFAULT = "vul-harness-lab-nov26"
 AWS_REGION_DEFAULT = "us-east-1"
+OWNER_DEFAULT = "workshop"
 ORCHESTRATION_DIR = ROOT / ".vulharness-orchestration"
 DEPLOYMENT_METADATA_DIR = ORCHESTRATION_DIR / "deployments"
 
@@ -69,6 +71,12 @@ def redact(value: str) -> str:
     for pattern, replacement in REDACTIONS:
         value = pattern.sub(replacement, value)
     return value
+
+
+def progress(message: str, status: str) -> None:
+    """Emit participant-facing progress without contaminating JSON stdout."""
+
+    print(f"[VulHarness] {message} {status}", file=sys.stderr, flush=True)
 
 
 def command_exists(command: str) -> bool:
@@ -121,6 +129,8 @@ def aws_env(args: argparse.Namespace, method: str | None = None) -> dict[str, st
     )
     if method == "terraform":
         environment["AWS_SDK_LOAD_CONFIG"] = "1"
+    if method == "aws-cli":
+        environment["VULHARNESS_OWNER"] = resolve_owner(args)
     return environment
 
 
@@ -141,6 +151,44 @@ def execute(
         "ok": False,
     }
     try:
+        if args.output == "text" and not inherit_stdio:
+            process = subprocess.Popen(
+                command,
+                cwd=ROOT,
+                env=environment or os.environ.copy(),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=1,
+            )
+            selector = selectors.DefaultSelector()
+            assert process.stdout is not None
+            assert process.stderr is not None
+            selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+            selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+            captured = {"stdout": [], "stderr": []}
+            while selector.get_map():
+                for key, _ in selector.select(timeout=0.25):
+                    line = key.fileobj.readline()
+                    if line == "":
+                        selector.unregister(key.fileobj)
+                        key.fileobj.close()
+                        continue
+                    stream = key.data
+                    safe_line = redact(line)
+                    captured[stream].append(safe_line)
+                    print(safe_line, end="", file=sys.stdout if stream == "stdout" else sys.stderr, flush=True)
+            returncode = process.wait()
+            result.update(
+                {
+                    "returncode": returncode,
+                    "ok": returncode == 0,
+                    "stdout": "".join(captured["stdout"]),
+                    "stderr": "".join(captured["stderr"]),
+                }
+            )
+            return result
+
         completed = subprocess.run(
             command,
             cwd=ROOT,
@@ -193,7 +241,9 @@ def run_plan(
 ) -> int:
     steps: list[dict[str, Any]] = []
     exit_code = EXIT_OK
-    for label, command, environment in plan:
+    progress(operation, "STARTED")
+    for index, (label, command, environment) in enumerate(plan, start=1):
+        progress(f"{operation} step {index}/{len(plan)}: {label}", "STARTED")
         step = execute(
             args,
             label,
@@ -204,7 +254,18 @@ def run_plan(
         steps.append(step)
         if not step["ok"]:
             exit_code = mapped_exit(step, blocked_codes=blocked_codes)
+            progress(
+                f"{operation} step {index}/{len(plan)}: {label} (exit {step['returncode']})",
+                "FAILED",
+            )
+            for skipped_index, (skipped_label, _, _) in enumerate(plan[index:], start=index + 1):
+                progress(
+                    f"{operation} step {skipped_index}/{len(plan)}: {skipped_label}",
+                    "SKIPPED",
+                )
             break
+        progress(f"{operation} step {index}/{len(plan)}: {label}", "OK")
+    progress(operation, "OK" if exit_code == EXIT_OK else "FAILED")
     payload = {
         "operation": operation,
         "ok": exit_code == EXIT_OK,
@@ -283,6 +344,10 @@ def validate(args: argparse.Namespace) -> None:
         raise HarnessError("confirmed cleanup is interactive; use text output")
 
     if args.env == "aws":
+        if not args.profile.strip():
+            raise HarnessError("AWS profile must not be empty")
+        if not args.region.strip():
+            raise HarnessError("AWS Region must not be empty")
         if args.command == "dashboard":
             raise HarnessError("dashboard is currently supported only with --env local")
         if args.command in {"setup", "status", "cleanup"} and args.lab:
@@ -452,8 +517,8 @@ def aws_wrapper_plan(args: argparse.Namespace, action: str) -> list[tuple[str, l
         command += ["--deployment-id", args.deployment_id]
     if args.expires_at:
         command += ["--expires-at", args.expires_at]
-    if args.owner:
-        command += ["--owner", args.owner]
+    if args.method != "aws-cli":
+        command += ["--owner", resolve_owner(args)]
     if args.method == "terraform" and args.state_dir:
         command += ["--state-dir", args.state_dir]
     if args.allow_guardduty_cleanup:
@@ -516,6 +581,27 @@ def metadata_path(deployment_id: str, method: str) -> Path:
     safe_method = method.replace("/", "-")
     safe_id = re.sub(r"[^a-zA-Z0-9_.-]", "_", deployment_id)
     return DEPLOYMENT_METADATA_DIR / f"{safe_method}-{safe_id}.json"
+
+
+def metadata_owner(args: argparse.Namespace) -> str:
+    deployment_id = args.deployment_id or os.environ.get("VULHARNESS_DEPLOYMENT_ID", "")
+    if not deployment_id or not args.method:
+        return ""
+    path = metadata_path(deployment_id, args.method)
+    if not path.exists():
+        return ""
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")).get("owner", "")
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return value if isinstance(value, str) else ""
+
+
+def resolve_owner(args: argparse.Namespace) -> str:
+    if args.owner:
+        return args.owner
+    configured_owner = os.environ.get("VULHARNESS_OWNER", "")
+    return configured_owner or metadata_owner(args) or OWNER_DEFAULT
 
 
 def write_metadata(args: argparse.Namespace, status: str) -> None:
@@ -600,6 +686,7 @@ def run_aws(args: argparse.Namespace) -> int:
             args.deployment_id = requested_id
         else:
             args.deployment_id = timestamp_id(args.method)
+        args.owner = resolve_owner(args)
         if not args.expires_at:
             args.expires_at = os.environ.get("VULHARNESS_EXPIRES_AT", "") or metadata_expiry(args)
         if not args.expires_at and not requested_id:
@@ -614,6 +701,7 @@ def run_aws(args: argparse.Namespace) -> int:
             print(f"Deployment ID: {args.deployment_id}")
             print(f"Metadata: {metadata_path(args.deployment_id, args.method).relative_to(ROOT)}")
         return code
+    args.owner = resolve_owner(args)
     if args.command == "status":
         return run_plan(args, "AWS status", aws_wrapper_plan(args, "status"))
     if args.command == "inspect":
@@ -656,7 +744,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--approve", choices=("setup", "remediate", "reset", "cleanup"), help="explicit operation approval")
     parser.add_argument("--profile", default=os.environ.get("AWS_PROFILE", AWS_PROFILE_DEFAULT))
     parser.add_argument("--region", default=os.environ.get("AWS_REGION", AWS_REGION_DEFAULT))
-    parser.add_argument("--owner", default="workshop")
+    parser.add_argument("--owner", help="deployment owner (or VULHARNESS_OWNER)")
     parser.add_argument("--expires-at")
     parser.add_argument("--state-dir")
     parser.add_argument("--dry-run", action="store_true")

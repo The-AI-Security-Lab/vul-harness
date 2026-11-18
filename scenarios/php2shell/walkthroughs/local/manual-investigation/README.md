@@ -20,7 +20,7 @@ These can differ because a host may have multiple PHP installations, a web serve
 
 ## Stage 1 workshop exercise
 
-The initial 90-minute workshop focuses on **Discover → Compare → Remediation Decision → Verify → Record Evidence**. Use the [Stage 1 evidence-report template](stage-1-evidence-report.md) to record the lab scope, HTTP-serving runtime, PHP-FPM image identity, authoritative fixed-version comparison, remediation decision, verification result, limitations, and cleanup.
+The initial 90-minute workshop focuses on **Discover → Compare → Remediation Decision → Verify → Record Evidence**. Use the [Stage 1 evidence-report template](../../evidence-report-template.md) to record the lab scope, HTTP-serving runtime, PHP-FPM image identity, authoritative fixed-version comparison, remediation decision, verification result, limitations, and cleanup.
 
 The workshop uses the existing PHP 8.4.27 local lab as a fixed-version verification target. A supplied before-remediation fixture may be used for the comparison exercise, but it must be clearly labeled as teaching evidence and must not be presented as an observation from the running lab. The workshop does not claim that an update occurred unless a before/after transition was actually observed and recorded.
 

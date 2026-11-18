@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 import importlib.util
 import json
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).with_name("aws_evaluate.py")
@@ -15,6 +19,53 @@ SPEC.loader.exec_module(MODULE)
 
 
 class AwsEvaluateTests(unittest.TestCase):
+    def test_empty_region_is_rejected_before_aws_calls(self):
+        with patch.object(MODULE.Aws, "call") as aws_call:
+            with self.assertRaises(SystemExit) as raised:
+                MODULE.main(
+                    [
+                        "--profile",
+                        "test-profile",
+                        "--region",
+                        "",
+                        "--method",
+                        "aws-cli",
+                        "--deployment-id",
+                        "vh-test",
+                    ]
+                )
+        self.assertEqual(raised.exception.code, 2)
+        aws_call.assert_not_called()
+
+    def test_inventory_api_failure_has_clean_actionable_error(self):
+        stdout = StringIO()
+        stderr = StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(
+                MODULE.Aws,
+                "call",
+                side_effect=MODULE.AwsEvaluationError("Invalid endpoint: https://ec2..amazonaws.com"),
+            ):
+                with redirect_stderr(stderr), redirect_stdout(stdout):
+                    code = MODULE.main(
+                        [
+                            "--profile",
+                            "test-profile",
+                            "--region",
+                            "us-east-1",
+                            "--method",
+                            "aws-cli",
+                            "--deployment-id",
+                            "vh-test",
+                            "--evidence-dir",
+                            directory,
+                        ]
+                    )
+        self.assertEqual(code, 1)
+        self.assertIn("AWS inventory/evaluation collection failed", stderr.getvalue())
+        self.assertIn("verify the AWS profile, Region, permissions, and deployment scope", stderr.getvalue())
+        self.assertNotIn("Traceback", stdout.getvalue() + stderr.getvalue())
+
     def test_definitions_cover_required_stages(self):
         definitions = json.loads((MODULE_PATH.parent / "evaluations.json").read_text())
         ids = {item["id"] for item in definitions["evaluations"]}
@@ -93,6 +144,68 @@ class AwsEvaluateTests(unittest.TestCase):
         output = "__VULHARNESS_CONFIG__\n{\"services\":{}}__VULHARNESS_IMAGES__\n[]\n"
         self.assertEqual(MODULE.parse_marker(output, "CONFIG"), '{"services":{}}')
         self.assertEqual(MODULE.parse_marker(output, "IMAGES"), "[]")
+
+    def test_running_services_with_healthy_checks_are_ready(self):
+        ps_output = json.dumps([
+            {"Service": "web", "State": "running", "Health": "healthy"},
+            {"Service": "php-fpm", "State": "running", "Health": "healthy"},
+        ])
+        config_output = json.dumps({
+            "services": {
+                "web": {"healthcheck": {"test": ["CMD", "true"]}},
+                "php-fpm": {"healthcheck": {"test": ["CMD", "true"]}},
+            }
+        })
+        assessment = MODULE.assess_compose_runtime(ps_output, config_output)
+        self.assertEqual(assessment["service_status"], "PASS")
+        self.assertEqual(assessment["health_status"], "PASS")
+        self.assertEqual(assessment["readiness"], "READY")
+
+    def test_stopped_service_is_not_ready(self):
+        ps_output = json.dumps([
+            {"Service": "web", "State": "running", "Health": ""},
+            {"Service": "php-fpm", "State": "exited", "Health": ""},
+        ])
+        config_output = json.dumps({"services": {"web": {}, "php-fpm": {}}})
+        assessment = MODULE.assess_compose_runtime(ps_output, config_output)
+        self.assertEqual(assessment["service_status"], "FAIL")
+        self.assertEqual(assessment["readiness"], "NOT READY")
+
+    def test_missing_service_is_not_ready(self):
+        ps_output = json.dumps([{"Service": "web", "State": "running", "Health": ""}])
+        config_output = json.dumps({"services": {"web": {}, "php-fpm": {}}})
+        assessment = MODULE.assess_compose_runtime(ps_output, config_output)
+        self.assertEqual(assessment["service_status"], "FAIL")
+        self.assertIn("php-fpm", assessment["service_observed"])
+        self.assertEqual(assessment["readiness"], "NOT READY")
+
+    def test_unhealthy_service_is_not_ready(self):
+        ps_output = json.dumps([
+            {"Service": "web", "State": "running", "Health": "healthy"},
+            {"Service": "php-fpm", "State": "running", "Health": "unhealthy"},
+        ])
+        config_output = json.dumps({
+            "services": {
+                "web": {"healthcheck": {"test": ["CMD", "true"]}},
+                "php-fpm": {"healthcheck": {"test": ["CMD", "true"]}},
+            }
+        })
+        assessment = MODULE.assess_compose_runtime(ps_output, config_output)
+        self.assertEqual(assessment["service_status"], "PASS")
+        self.assertEqual(assessment["health_status"], "FAIL")
+        self.assertEqual(assessment["readiness"], "RUNNING; HEALTH FAILED")
+
+    def test_running_services_without_health_checks_are_not_marked_ready(self):
+        ps_output = json.dumps([
+            {"Service": "web", "State": "running", "Health": ""},
+            {"Service": "php-fpm", "State": "running", "Health": ""},
+        ])
+        config_output = json.dumps({"services": {"web": {}, "php-fpm": {}}})
+        assessment = MODULE.assess_compose_runtime(ps_output, config_output)
+        self.assertEqual(assessment["service_status"], "PASS")
+        self.assertEqual(assessment["health_status"], "SKIP")
+        self.assertEqual(assessment["health_skip"], "healthcheck_not_configured")
+        self.assertEqual(assessment["readiness"], "RUNNING; HEALTH UNVERIFIED")
 
     def test_lifecycle_manifest_turns_collected_evidence_into_results(self):
         results = []
@@ -187,6 +300,22 @@ class AwsEvaluateTests(unittest.TestCase):
         self.assertEqual(by_id["GD-003"].status, "PASS")
         self.assertEqual(by_id["GD-005"].status, "SKIP")
         self.assertEqual(by_id["GD-005"].skip_classification, "conditional_guardduty_evidence")
+
+    def test_ssm_poll_reports_bounded_wait_and_terminal_state(self):
+        class FakeAws:
+            def __init__(self):
+                self.responses = iter([{"Status": "InProgress"}, {"Status": "Success"}])
+
+            def call(self, service, *args):
+                self.assert_service = service
+                return next(self.responses)
+
+        stderr = StringIO()
+        with redirect_stderr(stderr), patch.object(MODULE.time, "sleep"):
+            result = MODULE.poll_ssm(FakeAws(), "cmd-test", "i-test", 2, 0)
+        self.assertEqual(result["Status"], "Success")
+        self.assertIn("WAITING", stderr.getvalue())
+        self.assertIn("status=Success", stderr.getvalue())
 
 
 if __name__ == "__main__":

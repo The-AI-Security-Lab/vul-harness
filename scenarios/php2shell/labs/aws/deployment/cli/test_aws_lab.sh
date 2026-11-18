@@ -425,6 +425,32 @@ test_confirmed_cleanup_refuses_unowned_vpc_dependency() {
     pass 'refuses confirmed cleanup before touching an unowned VPC dependency'
 }
 
+test_validate_tags_refuses_owner_mismatch() {
+    source "$SCRIPT_DIR/aws-lab.sh"
+    reset_case
+    EXPIRES_AT='2026-11-12T00:00:00Z'
+    ec2_tag_value() {
+        case "$2" in
+            VulHarnessProject) printf '%s\n' "$PROJECT" ;;
+            VulHarnessScenario) printf '%s\n' "$SCENARIO" ;;
+            VulHarnessEnvironment) printf '%s\n' "$ENVIRONMENT" ;;
+            VulHarnessDeployment) printf '%s\n' "$DEPLOYMENT_ID" ;;
+            VulHarnessManagedBy) printf '%s\n' "$MANAGED_BY" ;;
+            VulHarnessDeploymentMethod) printf '%s\n' "$DEPLOYMENT_METHOD" ;;
+            VulHarnessOwner) printf '%s\n' 'different-owner' ;;
+            VulHarnessExpires) printf '%s\n' "$EXPIRES_AT" ;;
+            VulHarnessResource) printf '%s\n' 'vpc' ;;
+            Name) printf '%s\n' "vulharness-php2shell-$DEPLOYMENT_ID-vpc" ;;
+            *) return 1 ;;
+        esac
+    }
+    if (validate_ec2_tags 'vpc-owned' vpc '' "vulharness-php2shell-$DEPLOYMENT_ID-vpc") 2>"$RUN_ARGS_FILE"; then
+        fail 'owner mismatch was silently accepted'
+    fi
+    grep -Fq 'unexpected VulHarnessOwner tag' "$RUN_ARGS_FILE" || fail 'owner mismatch was not reported'
+    pass 'rejects a deployment with an owner tag mismatch'
+}
+
 test_new_route_creation
 test_existing_route_and_safe_rerun
 test_unrelated_route_is_not_replaced
@@ -439,5 +465,6 @@ test_ssm_timeout_reports_recovery_state
 test_partial_status_is_inspectable_but_unhealthy
 test_partial_cleanup_dry_run
 test_confirmed_cleanup_refuses_unowned_vpc_dependency
+test_validate_tags_refuses_owner_mismatch
 
 printf '%s\n' 'All AWS CLI regression tests passed.'

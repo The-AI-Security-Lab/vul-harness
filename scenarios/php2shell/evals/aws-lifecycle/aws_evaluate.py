@@ -27,6 +27,10 @@ CHECKER_PATH = ROOT / "scenarios/php2shell/checks/local-http-version/checker.py"
 EXPECTED_POLICY = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 
 
+def progress(message: str, status: str) -> None:
+    print(f"[VulHarness] PHP2Shell | evaluator | {message} {status}", file=sys.stderr, flush=True)
+
+
 def load_checker() -> Any:
     spec = importlib.util.spec_from_file_location("vulharness_php_checker", CHECKER_PATH)
     if spec is None or spec.loader is None:
@@ -205,6 +209,7 @@ def evaluate_guardduty_inventory(results: list[Result], inventory: dict[str, Any
 
 
 def collect_inventory(aws: Aws, deployment_id: str, method: str) -> dict[str, Any]:
+    progress(f"collect deployment-scoped inventory deployment={deployment_id} method={method}", "STARTED")
     filters = common_filters(deployment_id, method)
     vpcs = aws.call("ec2", "describe-vpcs", "--filters", *filters)["Vpcs"]
     vpc_endpoints: list[dict[str, Any]] = []
@@ -220,7 +225,7 @@ def collect_inventory(aws: Aws, deployment_id: str, method: str) -> dict[str, An
     instances = [instance for reservation in reservations for instance in reservation["Instances"]]
     volumes = aws.call("ec2", "describe-volumes", "--filters", *filters)["Volumes"]
     interfaces = aws.call("ec2", "describe-network-interfaces", "--filters", *filters)["NetworkInterfaces"]
-    return {
+    inventory = {
         "vpcs": vpcs,
         "vpc_endpoints": vpc_endpoints,
         "subnets": subnets,
@@ -231,6 +236,8 @@ def collect_inventory(aws: Aws, deployment_id: str, method: str) -> dict[str, An
         "volumes": volumes,
         "network_interfaces": interfaces,
     }
+    progress(f"collect deployment-scoped inventory deployment={deployment_id}", "OK")
+    return inventory
 
 
 def collect_iam_ownership(aws: Aws, deployment_id: str, method: str) -> dict[str, list[dict[str, Any]]]:
@@ -477,19 +484,35 @@ def evaluate_cleanup_absence(aws: Aws, inventory: dict[str, Any], deployment_id:
 def poll_ssm(aws: Aws, command_id: str, instance_id: str, attempts: int, seconds: float) -> dict[str, Any]:
     terminal = {"Success", "Failed", "TimedOut", "Cancelled", "Cancelling"}
     last: dict[str, Any] = {}
-    for _ in range(attempts):
+    started = time.monotonic()
+    next_report = 0.0
+    for attempt in range(1, attempts + 1):
         response = aws.call("ssm", "get-command-invocation", "--command-id", command_id, "--instance-id", instance_id)
         last = response
         if response.get("Status") in terminal:
+            progress(
+                f"SSM command={command_id} instance={instance_id} status={response.get('Status')} elapsed={time.monotonic() - started:.1f}s",
+                "OK" if response.get("Status") == "Success" else "FAILED",
+            )
             return response
+        elapsed = time.monotonic() - started
+        if attempt == 1 or elapsed >= next_report:
+            progress(
+                f"waiting for SSM command={command_id} instance={instance_id} status={response.get('Status', 'Pending')} attempt={attempt}/{attempts} elapsed={elapsed:.1f}s",
+                "WAITING",
+            )
+            next_report = elapsed + max(15.0, seconds)
         time.sleep(seconds)
+    progress(f"SSM command={command_id} instance={instance_id} exhausted bounded polling", "FAILED")
     raise AwsEvaluationError(f"SSM command {command_id} timed out; last status={last.get('Status', 'unknown')}")
 
 
 def run_ssm(aws: Aws, instance_id: str, commands: list[str], attempts: int, seconds: float) -> dict[str, Any]:
     parameters = json.dumps({"commands": commands}, separators=(",", ":"))
+    progress(f"send evaluator SSM command to instance={instance_id}", "REQUESTED")
     response = aws.call("ssm", "send-command", "--document-name", "AWS-RunShellScript", "--instance-ids", instance_id, "--parameters", parameters, "--timeout-seconds", "300")
     command_id = response["Command"]["CommandId"]
+    progress(f"evaluator SSM command={command_id} accepted", "OK")
     result = poll_ssm(aws, command_id, instance_id, attempts, seconds)
     if result.get("Status") != "Success":
         raise AwsEvaluationError(f"SSM command {command_id} ended with {result.get('Status')}")
@@ -509,6 +532,131 @@ def parse_marker(output: str, marker: str) -> str:
                 values.append(value)
             return "\n".join(values).strip()
     return ""
+
+
+REQUIRED_COMPOSE_SERVICES = ("web", "php-fpm")
+
+
+def parse_json_records(output: str) -> list[dict[str, Any]]:
+    """Parse Compose JSON output as either an array or JSON-lines records."""
+
+    text = output.strip()
+    if not text:
+        return []
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        records = []
+        for line in text.splitlines():
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                records.append(value)
+        return records
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        return [payload]
+    return []
+
+
+def parse_compose_config(output: str) -> dict[str, Any] | None:
+    """Return structured Compose configuration or None when it is invalid."""
+
+    try:
+        payload = json.loads(output.strip())
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) and isinstance(payload.get("services"), dict) else None
+
+
+def assess_compose_runtime(ps_output: str, config_output: str) -> dict[str, str | None]:
+    """Assess required service state and configured health checks fail-closed."""
+
+    records = parse_json_records(ps_output)
+    by_service = {
+        str(record.get("Service")): record
+        for record in records
+        if record.get("Service")
+    }
+    missing = [service for service in REQUIRED_COMPOSE_SERVICES if service not in by_service]
+    not_running = [
+        f"{service}={by_service[service].get('State', 'unknown')}"
+        for service in REQUIRED_COMPOSE_SERVICES
+        if service in by_service and str(by_service[service].get("State", "")).lower() != "running"
+    ]
+    if missing or not_running:
+        service_status = "FAIL"
+        service_observed = f"missing={missing or []}; not_running={not_running or []}"
+        readiness = "NOT READY"
+    else:
+        service_status = "PASS"
+        service_states = [
+            f"{service}={by_service[service].get('State', 'unknown')}"
+            for service in REQUIRED_COMPOSE_SERVICES
+        ]
+        service_observed = f"service_states={service_states}; all required services present and running"
+        readiness = "RUNNING"
+
+    config = parse_compose_config(config_output)
+    if config is None:
+        health_status = "FAIL"
+        health_observed = "Compose configuration JSON could not be parsed"
+        health_skip = None
+        readiness = "NOT READY"
+    else:
+        configured_health = {
+            service
+            for service, definition in config["services"].items()
+            if isinstance(definition, dict)
+            and isinstance(definition.get("healthcheck"), dict)
+            and not definition["healthcheck"].get("disable", False)
+        }
+        if not configured_health:
+            health_status = "SKIP"
+            health_observed = "no Compose health checks configured"
+            health_skip = "healthcheck_not_configured"
+            if service_status == "PASS":
+                readiness = "RUNNING; HEALTH UNVERIFIED"
+        else:
+            missing_health = [
+                service for service in REQUIRED_COMPOSE_SERVICES if service not in configured_health
+            ]
+            unhealthy = []
+            for service in sorted(configured_health):
+                record = by_service.get(service)
+                health = str(record.get("Health", "")).lower() if record else ""
+                if health != "healthy":
+                    unhealthy.append(f"{service}={health or 'unreported'}")
+            if unhealthy:
+                health_status = "FAIL"
+                health_observed = f"missing_health_checks={missing_health or []}; unhealthy={unhealthy or []}"
+                health_skip = None
+                if service_status == "PASS":
+                    readiness = "RUNNING; HEALTH FAILED"
+            elif missing_health:
+                health_status = "SKIP"
+                health_observed = f"missing_health_checks={missing_health}; configured health checks are healthy"
+                health_skip = "healthcheck_not_configured"
+                if service_status == "PASS":
+                    readiness = "RUNNING; HEALTH UNVERIFIED"
+            else:
+                health_status = "PASS"
+                health_observed = "all configured Compose health checks are healthy"
+                health_skip = None
+                if service_status == "PASS":
+                    readiness = "READY"
+
+    return {
+        "service_status": service_status,
+        "service_observed": service_observed,
+        "health_status": health_status,
+        "health_observed": health_observed,
+        "health_skip": health_skip,
+        "readiness": readiness,
+    }
 
 
 def expected_php_version(lab_id: str, phase: str) -> str:
@@ -568,9 +716,11 @@ def add_php_results(
 def evaluate_ssm_runtime(aws: Aws, inventory: dict[str, Any], results: list[Result], attempts: int, seconds: float, evidence_dir: Path, phase: str) -> None:
     active = {tags(item).get("VulHarnessLab"): item for item in inventory["instances"] if item.get("State", {}).get("Name") == "running"}
     for lab_id in ("lab-c", "lab-d"):
+        progress(f"evaluate SSM runtime {lab_id} phase={phase}", "STARTED")
         instance = active.get(lab_id)
         if not instance:
             add_result(results, "INF-009", "FAIL", "SSM Online instance", f"{lab_id} running instance not found", "inventory.json", failure="MISSING_RESOURCE", lab_id=lab_id, phase=phase)
+            progress(f"evaluate SSM runtime {lab_id}: running instance not found", "FAILED")
             continue
         instance_id = instance["InstanceId"]
         try:
@@ -578,6 +728,7 @@ def evaluate_ssm_runtime(aws: Aws, inventory: dict[str, Any], results: list[Resu
             online = bool(info and info[0].get("PingStatus") == "Online")
             add_result(results, "INF-009", "PASS" if online else "FAIL", f"{lab_id} SSM Online", repr(info), "ssm.json", failure=None if online else "SSM_NOT_ONLINE", lab_id=lab_id, phase=phase)
             if not online:
+                progress(f"evaluate SSM runtime {lab_id}: SSM is not Online", "FAILED")
                 continue
             compose = f"/opt/vulharness/scenarios/php2shell/labs/aws/{lab_id}/compose.{lab_id}.yaml"
             invocation = run_ssm(aws, instance_id, [
@@ -589,7 +740,7 @@ def evaluate_ssm_runtime(aws: Aws, inventory: dict[str, Any], results: list[Resu
                 "docker compose version",
                 f"test -f '{compose}'",
                 "printf '%s\\n' __VULHARNESS_PS__",
-                f"docker compose -f '{compose}' ps --format json",
+                f"docker compose -f '{compose}' ps --all --format json",
                 "printf '%s\\n' __VULHARNESS_CONFIG__",
                 f"docker compose -f '{compose}' config --format json; printf '\\n'",
                 "printf '%s\\n' __VULHARNESS_IMAGES__",
@@ -607,14 +758,16 @@ def evaluate_ssm_runtime(aws: Aws, inventory: dict[str, Any], results: list[Resu
             config_output = parse_marker(output, "CONFIG")
             image_output = parse_marker(output, "IMAGES")
             runtime_text = parse_marker(output, "RUNTIME")
+            compose_config = parse_compose_config(config_output)
+            compose_assessment = assess_compose_runtime(compose_output, config_output)
             try:
                 runtime = json.loads(runtime_text)
             except json.JSONDecodeError as exc:
                 runtime = {}
                 add_result(results, "RUN-008", "FAIL", "loopback HTTP response is valid JSON", f"{lab_id}: {exc}", f"{lab_id}-ssm-runtime.txt", failure="RUNTIME_JSON", lab_id=lab_id, phase=phase)
-            add_result(results, "RUN-005", "PASS" if compose_output else "FAIL", "Compose configuration valid", f"{lab_id}: compose output collected", f"{lab_id}-ssm-runtime.txt", failure=None if compose_output else "COMPOSE_OUTPUT", lab_id=lab_id, phase=phase)
-            add_result(results, "RUN-006", "PASS" if compose_output else "FAIL", "Containers running", f"{lab_id}: compose ps output collected", f"{lab_id}-ssm-runtime.txt", failure=None if compose_output else "CONTAINERS", lab_id=lab_id, phase=phase)
-            add_result(results, "RUN-007", "PASS" if compose_output else "FAIL", "Container health/status is inspectable", f"{lab_id}: compose ps output collected", f"{lab_id}-ssm-runtime.txt", failure=None if compose_output else "CONTAINER_STATUS", lab_id=lab_id, phase=phase)
+            add_result(results, "RUN-005", "PASS" if compose_config else "FAIL", "Compose configuration is valid JSON with services", f"{lab_id}: structured Compose configuration parsed={bool(compose_config)}", f"{lab_id}-ssm-runtime.txt", failure=None if compose_config else "COMPOSE_CONFIG", lab_id=lab_id, phase=phase)
+            add_result(results, "RUN-006", compose_assessment["service_status"], "required web and php-fpm services are present and running", f"{lab_id}: {compose_assessment['service_observed']}", f"{lab_id}-ssm-runtime.txt", failure=None if compose_assessment["service_status"] == "PASS" else "REQUIRED_SERVICES_NOT_RUNNING", lab_id=lab_id, phase=phase)
+            add_result(results, "RUN-007", compose_assessment["health_status"], "configured Compose health checks are healthy, when present", f"{lab_id}: {compose_assessment['health_observed']}", f"{lab_id}-ssm-runtime.txt", failure=None if compose_assessment["health_status"] in {"PASS", "SKIP"} else "RUNTIME_HEALTH", skip_classification=compose_assessment["health_skip"], lab_id=lab_id, phase=phase)
             if runtime:
                 add_result(results, "RUN-008", "PASS", "Loopback HTTP response", f"{lab_id}: runtime JSON parsed", f"{lab_id}-ssm-runtime.txt", lab_id=lab_id, phase=phase)
             loopback_config_ok = "127.0.0.1" in config_output and "0.0.0.0" not in config_output
@@ -622,11 +775,116 @@ def evaluate_ssm_runtime(aws: Aws, inventory: dict[str, Any], results: list[Resu
             add_result(results, "RUN-012", "PASS", "Runtime evidence collected through SSM", "SSM invocation succeeded", f"{lab_id}-ssm-runtime.txt", lab_id=lab_id, phase=phase)
             if runtime:
                 add_php_results(results, lab_id, phase, runtime, compose_output, image_output, f"{lab_id}-ssm-runtime.txt")
+            progress(f"evaluate SSM runtime {lab_id} phase={phase}", "OK")
         except AwsEvaluationError as exc:
+            progress(f"evaluate SSM runtime {lab_id}: {exc}", "FAILED")
             add_result(results, "RUN-012", "FAIL", "runtime evidence through SSM", str(exc), "ssm.json", failure="SSM_ERROR", recovery="Inspect SSM registration and retry with bounded polling.", lab_id=lab_id, phase=phase)
 
 
-def main() -> int:
+def result_for(results: list[Result], evaluation_id: str, lab_id: str) -> Result | None:
+    return next(
+        (
+            item
+            for item in results
+            if item.evaluation_id == evaluation_id and item.lab_id == lab_id
+        ),
+        None,
+    )
+
+
+def instance_id_for(inventory: dict[str, Any], lab_id: str) -> str:
+    for instance in inventory.get("instances", []):
+        if tags(instance).get("VulHarnessLab") == lab_id:
+            return instance.get("InstanceId", "unavailable")
+    return "unavailable"
+
+
+def runtime_values(result: Result | None) -> tuple[str, str]:
+    if result is None:
+        return "not collected", "not collected"
+    version_match = re.search(r"observed='([^']*)'", result.observed)
+    classification_match = re.search(r"classification=([a-z_]+)", result.observed)
+    return (
+        version_match.group(1) if version_match else "unavailable",
+        classification_match.group(1) if classification_match else "unavailable",
+    )
+
+
+def print_runtime_summary(
+    inventory: dict[str, Any],
+    results: list[Result],
+    phase: str,
+    include_ssm: bool,
+) -> None:
+    print("\nRuntime summary:")
+    if not include_ssm:
+        print("Runtime evidence was not collected. Re-run with --include-ssm for PHP runtime results.")
+        return
+    print("| Lab | EC2 instance | Observed PHP | Expected PHP | Required services | Runtime health | PHP verification | Classification | Evidence | Readiness | Next step |")
+    print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    for lab_id in ("lab-c", "lab-d"):
+        classification_result = result_for(results, "PHP-011", lab_id)
+        version, classification = runtime_values(classification_result)
+        service_result = result_for(results, "RUN-006", lab_id)
+        health_result = result_for(results, "RUN-007", lab_id)
+        php_result = result_for(results, "PHP-003", lab_id)
+        http_result = result_for(results, "PHP-004", lab_id)
+        required_services = (
+            "RUNNING" if service_result and service_result.status == "PASS"
+            else "NOT RUNNING" if service_result and service_result.status == "FAIL"
+            else "NOT VERIFIED"
+        )
+        runtime_health = (
+            "VERIFIED" if health_result and health_result.status == "PASS"
+            else "FAILED" if health_result and health_result.status == "FAIL"
+            else "UNVERIFIED"
+        )
+        php_verification = (
+            f"VERIFIED: {version}"
+            if php_result and php_result.status == "PASS" and http_result and http_result.status == "PASS"
+            else "NOT VERIFIED"
+        )
+        if service_result and service_result.status == "PASS" and health_result and health_result.status == "PASS":
+            readiness = "READY"
+        elif service_result and service_result.status == "PASS" and health_result and health_result.status == "SKIP":
+            readiness = "RUNNING; HEALTH UNVERIFIED"
+        elif service_result and service_result.status == "PASS" and health_result and health_result.status == "FAIL":
+            readiness = "RUNNING; HEALTH FAILED"
+        else:
+            readiness = "NOT READY"
+        if not classification_result or classification_result.status != "PASS":
+            classification = "inconclusive"
+        evidence_result = result_for(results, "RUN-012", lab_id)
+        evidence_status = evidence_result.status if evidence_result else "NOT COLLECTED"
+        if classification == "potentially_affected_upstream_version":
+            next_step = "Investigate/remediate Lab D"
+        elif classification == "fixed_upstream_version":
+            next_step = "Use as fixed reference"
+        else:
+            next_step = "Review evidence and retry"
+        print(
+            f"| {lab_id} | {instance_id_for(inventory, lab_id)} | {version} | "
+            f"{expected_php_version(lab_id, phase)} | {required_services} | "
+            f"{runtime_health} | {php_verification} | {classification} | "
+            f"{evidence_status} | {readiness} | {next_step} |"
+        )
+    print("A potentially affected version is not confirmation of exploitability.")
+
+
+def validate_evaluator_inputs(profile: str, region: str, method: str, deployment_id: str) -> None:
+    """Reject incomplete AWS scope before constructing or invoking AWS calls."""
+
+    for option, value in (
+        ("--profile", profile),
+        ("--region", region),
+        ("--method", method),
+        ("--deployment-id", deployment_id),
+    ):
+        if not value or not value.strip():
+            raise AwsEvaluationError(f"{option} must not be empty")
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", default="vul-harness-lab-nov26")
     parser.add_argument("--region", default="us-east-1")
@@ -640,12 +898,23 @@ def main() -> int:
     parser.add_argument("--protected-instance-id", default=os.environ.get("VULHARNESS_PROTECTED_INSTANCE_ID"), help="account-specific protected instance ID; prefer VULHARNESS_PROTECTED_INSTANCE_ID and never commit it")
     parser.add_argument("--ssm-attempts", type=int, default=40)
     parser.add_argument("--ssm-seconds", type=float, default=5)
-    args = parser.parse_args()
+    parser.add_argument("--verbose", action="store_true", help="print every evaluation observation")
+    args = parser.parse_args(argv)
+    try:
+        validate_evaluator_inputs(args.profile, args.region, args.method, args.deployment_id)
+    except AwsEvaluationError as exc:
+        parser.error(str(exc))
     evidence_dir = args.evidence_dir or Path("docs/evidence/aws") / args.method / args.deployment_id
     evidence_dir.mkdir(parents=True, exist_ok=True)
     results: list[Result] = []
     metadata = {"schema_version": "1.0", "evaluation_version": "1.0", "scenario": "php2shell", "deployment_method": args.method, "deployment_id": args.deployment_id, "region": args.region, "profile": args.profile, "observed_at": now(), "mode": "cleanup-absence" if args.expect_absent else "lifecycle"}
     aws = Aws(args.profile, args.region)
+    progress(
+        f"AWS lifecycle evaluation deployment={args.deployment_id} method={args.method} mode={'cleanup-absence' if args.expect_absent else 'lifecycle'}",
+        "STARTED",
+    )
+    inventory: dict[str, Any] = {}
+    inventory_error: str | None = None
     try:
         inventory = collect_inventory(aws, args.deployment_id, args.method)
         (evidence_dir / "inventory.json").write_text(json.dumps(inventory, indent=2, sort_keys=True) + "\n")
@@ -662,6 +931,8 @@ def main() -> int:
             for lab_id in ("lab-c", "lab-d"):
                 add_result(results, "RUN-001", "SKIP", "runtime evaluation requested explicitly", "not requested", "inventory.json", failure="NOT_COLLECTED", skip_classification="coverage_gap", lab_id=lab_id, phase=args.phase)
     except AwsEvaluationError as exc:
+        inventory_error = str(exc)
+        progress(f"AWS lifecycle evaluation API error: {exc}", "FAILED")
         (evidence_dir / "evaluation-error.txt").write_text(str(exc) + "\n")
         # Do not mix partial observations with the fail-closed API-error
         # result set; that could create duplicate contract identities.
@@ -684,10 +955,32 @@ def main() -> int:
     print(f"Deployment method: {args.method}")
     print(f"Deployment ID: {args.deployment_id}")
     print(f"Results: PASS={payload['summary']['PASS']} FAIL={payload['summary']['FAIL']} SKIP={payload['summary']['SKIP']} BLOCKED_BY_EXTERNAL_DEPENDENCY={payload['summary']['BLOCKED_BY_EXTERNAL_DEPENDENCY']}")
-    for item in results:
-        print(f"{item.result_id}: {item.status} — {item.observed}")
+    if inventory_error:
+        print(
+            f"ERROR: AWS inventory/evaluation collection failed: {inventory_error}",
+            file=sys.stderr,
+        )
+        print(
+            "Next action: verify the AWS profile, Region, permissions, and deployment scope, then rerun the evaluator.",
+            file=sys.stderr,
+        )
+        progress("AWS lifecycle evaluation", "FAILED")
+        return 1
+    print_runtime_summary(inventory, results, args.phase, args.include_ssm)
+    if args.verbose:
+        for item in results:
+            print(f"{item.result_id}: {item.status} — {item.observed}")
+    else:
+        failures = [item for item in results if item.status == "FAIL"]
+        if failures:
+            print("Failure details:")
+            for item in failures:
+                recovery = f"; recovery={item.recovery_recommendation}" if item.recovery_recommendation else ""
+                print(f"{item.result_id}: {item.status}; failure={item.failure_classification or 'unspecified'}{recovery}")
     if payload["summary"]["BLOCKED_BY_EXTERNAL_DEPENDENCY"]:
+        progress("AWS lifecycle evaluation blocked by external dependency", "FAILED")
         return 2
+    progress("AWS lifecycle evaluation", "FAILED" if payload["summary"]["FAIL"] else "OK")
     return 1 if payload["summary"]["FAIL"] else 0
 
 

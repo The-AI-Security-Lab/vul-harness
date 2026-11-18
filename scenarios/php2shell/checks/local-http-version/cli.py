@@ -23,6 +23,10 @@ from checker import (
 )
 
 
+def progress(message: str, status: str) -> None:
+    print(f"[VulHarness] PHP2Shell | local checker | {message} {status}", file=sys.stderr, flush=True)
+
+
 def render_human(report: CheckReport) -> str:
     lines = [
         "VulHarness PHP2Shell version check",
@@ -91,6 +95,8 @@ def main(
         print(f"Target configuration error: {exc}", file=sys.stderr)
         return 4
 
+    selected_ids = ", ".join(target.identifier for target in selected)
+    progress(f"checking targets={selected_ids}", "STARTED")
     reports = run_checks(selected, collector)
     if args.json:
         payload = (
@@ -101,7 +107,9 @@ def main(
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print("\n\n".join(render_human(report) for report in reports))
-    return exit_code_for_reports(reports)
+    code = exit_code_for_reports(reports)
+    progress(f"checked targets={selected_ids} exit_code={code}", "OK" if code == 0 else "FAILED")
+    return code
 
 
 if __name__ == "__main__":

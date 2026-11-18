@@ -11,6 +11,10 @@ GUARDDUTY_RELEASE_AUTHORIZED="${VULHARNESS_ALLOW_GUARDDUTY_CLEANUP:-0}"
 GUARDDUTY_WAIT_ATTEMPTS="${VULHARNESS_GUARDDUTY_WAIT_ATTEMPTS:-24}"
 GUARDDUTY_WAIT_SECONDS="${VULHARNESS_GUARDDUTY_WAIT_SECONDS:-5}"
 
+guardduty_progress() {
+    printf '[VulHarness] PHP2Shell | GuardDuty dependency | %s %s\n' "$1" "$2" >&2
+}
+
 guardduty_endpoint_service() {
     printf 'com.amazonaws.%s.guardduty-data' "$AWS_REGION"
 }
@@ -98,6 +102,7 @@ PY
 guardduty_wait_absent() {
     kind="$1"
     resource_id="$2"
+    started="$(date +%s)"
     attempt=1
     while [ "$attempt" -le "$GUARDDUTY_WAIT_ATTEMPTS" ]; do
         if [ "$kind" = endpoint ]; then
@@ -108,7 +113,12 @@ guardduty_wait_absent() {
             output="$(aws_cli ec2 describe-security-groups --group-ids "$resource_id" --query 'SecurityGroups[0].GroupId' --output text 2>/tmp/vulharness-guardduty-wait.err || true)"
         fi
         if [ -z "$output" ] || [ "$output" = None ] || grep -Fq 'NotFound' /tmp/vulharness-guardduty-wait.err; then
+            guardduty_progress "$kind $resource_id is absent" OK
             return 0
+        fi
+        if [ "$attempt" -eq 1 ] || [ $((attempt % 3)) -eq 0 ]; then
+            elapsed=$(( $(date +%s) - started ))
+            guardduty_progress "waiting for $kind $resource_id to disappear attempt=$attempt/$GUARDDUTY_WAIT_ATTEMPTS elapsed=${elapsed}s" WAITING
         fi
         sleep "$GUARDDUTY_WAIT_SECONDS"
         attempt=$((attempt + 1))
@@ -119,6 +129,7 @@ guardduty_wait_absent() {
 
 guardduty_release() {
     vpc_id="$1"
+    guardduty_progress "release plan for VPC $vpc_id" STARTED
     plan="$(guardduty_plan "$vpc_id")"
     guardduty_ids="$(python3 -c 'import json,sys; print("\n".join(json.loads(sys.argv[1])["guardduty_endpoint_ids"]))' "$plan")"
     ambiguous_ids="$(python3 -c 'import json,sys; print("\n".join(json.loads(sys.argv[1])["ambiguous_endpoint_ids"]))' "$plan")"
@@ -128,7 +139,10 @@ guardduty_release() {
 
     [ -z "$ambiguous_ids" ] || { printf 'ERROR: ambiguous or unrelated VPC endpoints in VPC %s: %s\n' "$vpc_id" "$ambiguous_ids" >&2; return 1; }
     [ -z "$unrelated_eni_ids" ] || { printf 'ERROR: unrelated VPC consumers remain in VPC %s: %s\n' "$vpc_id" "$unrelated_eni_ids" >&2; return 1; }
-    [ -z "$guardduty_ids" ] && [ -z "$security_group_ids" ] && return 0
+    if [ -z "$guardduty_ids" ] && [ -z "$security_group_ids" ]; then
+        guardduty_progress "no GuardDuty endpoint resources require release in VPC $vpc_id" SKIPPED
+        return 0
+    fi
     [ "$GUARDDUTY_RELEASE_AUTHORIZED" = 1 ] || { printf 'ERROR: GuardDuty endpoint release requires --allow-guardduty-cleanup or VULHARNESS_ALLOW_GUARDDUTY_CLEANUP=1\n' >&2; return 1; }
 
     for endpoint_id in $guardduty_ids; do
@@ -149,6 +163,7 @@ guardduty_release() {
         aws_cli ec2 delete-security-group --group-id "$group_id" >/dev/null
         guardduty_wait_absent security-group "$group_id" || return 1
     done
+    guardduty_progress "verified GuardDuty endpoint resources released from VPC $vpc_id" OK
 }
 
 guardduty_preflight() {

@@ -36,6 +36,10 @@ STATE_EXPECTATIONS = {
 }
 
 
+def progress(message: str, status: str) -> None:
+    print(f"[VulHarness] PHP2Shell | remediation evaluator | {message} {status}", file=sys.stderr, flush=True)
+
+
 class InspectionError(Exception):
     """A fixed read-only Docker inspection could not produce usable evidence."""
 
@@ -224,10 +228,84 @@ def evaluate_state(
 
 
 def render_result(result: EvaluationResult) -> str:
+    status = "PASS" if result.passed else "FAIL"
+    observed_version = result.report.php_version or "unavailable"
+
+    if result.report.error_code:
+        summary_detail = (
+            f"runtime evidence error {result.report.error_code}; observed PHP "
+            f"{observed_version}, expected {result.expected_version}"
+        )
+    elif result.passed and result.state == "before":
+        summary_detail = (
+            f"Lab B serves PHP {observed_version} with the expected "
+            f"{result.expected_classification} classification"
+        )
+    elif result.passed and result.state == "config-only":
+        summary_detail = (
+            f"Lab B serves PHP {observed_version} and the desired PHP-FPM image "
+            f"is {FIXED_IMAGE}"
+        )
+    elif result.passed and result.state == "after":
+        summary_detail = (
+            f"Lab B serves PHP {observed_version} and the running PHP-FPM image "
+            "matches the fixed expectation"
+        )
+    elif result.state == "config-only":
+        failed_image = next(
+            (item for item in result.checks if item.name == "merged desired PHP-FPM image"),
+            None,
+        )
+        summary_detail = (
+            f"Lab B serves PHP {observed_version}, expected {result.expected_version}; "
+            f"desired PHP-FPM image is {failed_image.observed if failed_image else 'unavailable'}"
+        )
+    elif result.state == "after":
+        summary_detail = (
+            f"Lab B serves PHP {observed_version}, expected {result.expected_version}; "
+            "running PHP-FPM image evidence does not match the fixed expectation"
+        )
+    else:
+        summary_detail = (
+            f"Lab B serves PHP {observed_version}, expected {result.expected_version}"
+        )
+
+    if result.report.error_code:
+        next_action = (
+            f"Resolve the evidence error, confirm Lab B is available, and rerun "
+            f"--state {result.state}."
+        )
+    elif result.passed and result.state == "before":
+        next_action = (
+            "Record the baseline evidence, then inspect the merged configuration "
+            "or apply the approved remediation."
+        )
+    elif result.passed and result.state == "config-only":
+        next_action = "Apply the approved Lab B update, then rerun --state after."
+    elif result.passed and result.state == "after":
+        next_action = "Retain the evidence and continue to the next exercise or scoped cleanup."
+    elif result.state in {"before", "config-only"} and result.report.php_version != result.expected_version:
+        next_action = (
+            f"Reset Lab B to its baseline, confirm PHP {result.expected_version}, "
+            f"and rerun --state {result.state}."
+        )
+    elif result.state == "config-only":
+        next_action = (
+            "Verify the merged Compose configuration selects the approved fixed "
+            "image, then rerun --state config-only."
+        )
+    elif result.state == "after":
+        next_action = (
+            "Apply the approved update, confirm PHP 8.4.27 and the fixed PHP-FPM "
+            "image, then rerun --state after."
+        )
+    else:
+        next_action = f"Review the failed checks and rerun --state {result.state}."
+
     lines = [
         "VulHarness PHP2Shell remediation lifecycle evaluation",
         f"State: {result.state}",
-        f"Result: {'PASS' if result.passed else 'FAIL'}",
+        f"Result: {status}",
         f"Evidence endpoint: {result.report.target.endpoint}",
         f"Observation timestamp: {result.report.observed_at or 'unavailable'}",
         f"Observed PHP version: {result.report.php_version or 'unavailable'}",
@@ -254,9 +332,28 @@ def render_result(result: EvaluationResult) -> str:
             "Application exploitability assessed: no",
             "Limitation: PASS verifies this exercise's version and state evidence only; it "
             "does not establish exploitability or complete vulnerability remediation.",
+            f"Summary: {status} — state={result.state}; {summary_detail}.",
+            f"Next action: {next_action}",
         ]
     )
     return "\n".join(lines)
+
+
+def render_setup_failure(state: str, message: str) -> str:
+    """Render a state-aware result when evaluation setup cannot start."""
+
+    return "\n".join(
+        [
+            "VulHarness PHP2Shell remediation lifecycle evaluation",
+            f"State: {state}",
+            "Result: FAIL",
+            f"Evaluation setup error: {message}",
+            "Application exploitability assessed: no",
+            "Limitation: no state evaluation was completed because setup failed.",
+            f"Summary: FAIL — state={state}; evaluation setup failed.",
+            f"Next action: Resolve the evaluation setup error and rerun --state {state}.",
+        ]
+    )
 
 
 def exit_code_for(result: EvaluationResult) -> int:
@@ -279,26 +376,39 @@ def main(
     running_image_reader: Callable[[], str] = inspect_running_php_image,
 ) -> int:
     args = build_parser().parse_args(argv)
+    progress(f"evaluate Lab B state={args.state}", "STARTED")
+    progress("collect HTTP runtime evidence", "STARTED")
     try:
         report = report_provider()
     except checker.ConfigurationError as exc:
-        print(f"Evaluation setup failed: {exc}")
+        print(render_setup_failure(args.state, str(exc)))
+        progress("collect HTTP runtime evidence", "FAILED")
+        progress(f"evaluate Lab B state={args.state}", "FAILED")
         return 1
+    progress("collect HTTP runtime evidence", "OK")
 
     desired_image = None
     desired_error = None
     running_image = None
     running_error = None
     if args.state == "config-only":
+        progress("inspect merged Compose image configuration", "STARTED")
         try:
             desired_image = desired_image_reader()
         except InspectionError as exc:
             desired_error = str(exc)
+            progress("inspect merged Compose image configuration", "FAILED")
+        else:
+            progress("inspect merged Compose image configuration", "OK")
     elif args.state == "after":
+        progress("inspect running Lab B PHP-FPM image", "STARTED")
         try:
             running_image = running_image_reader()
         except InspectionError as exc:
             running_error = str(exc)
+            progress("inspect running Lab B PHP-FPM image", "FAILED")
+        else:
+            progress("inspect running Lab B PHP-FPM image", "OK")
 
     result = evaluate_state(
         args.state,
@@ -309,7 +419,9 @@ def main(
         running_error=running_error,
     )
     print(render_result(result))
-    return exit_code_for(result)
+    code = exit_code_for(result)
+    progress(f"evaluate Lab B state={args.state} exit_code={code}", "OK" if code == 0 else "FAILED")
+    return code
 
 
 if __name__ == "__main__":
