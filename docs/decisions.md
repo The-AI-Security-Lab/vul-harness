@@ -93,4 +93,3 @@ This record captures the implementation decisions for the three independent AWS 
 - **Current boundary:** PHP2Shell is the first reference implementation. Its local/AWS labs, checks, evaluations, and `scripts/vulharness-php2shell.py` are available today, but the orchestration command is scenario-specific.
 - **Future boundary:** additional scenarios may use different environments, checks, and evaluators. A shared registry, generic multi-scenario execution, chief-of-staff agent, and AI-assisted scenario planner remain future concepts and require human review, deterministic implementation, and independent evaluation.
 - **Contribution guidance:** the public [scenario development guide](scenario-development-guide.md) is the methodology reference; [CONTRIBUTING.md](../CONTRIBUTING.md) remains the pull-request and safety contract.
-
